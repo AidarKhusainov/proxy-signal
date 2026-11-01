@@ -170,8 +170,14 @@ impl Config {
                 }
                 let url = validate_https(&case.url)?;
                 let destination = (url.host_str().unwrap_or("").to_owned(), url.port_or_known_default());
-                if !destinations.insert(destination) {
+                if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
+                }
+                if self.endpoints.iter().any(|e| {
+                    let Ok(endpoint_url) = validate_https(&e.url) else { return false; };
+                    (endpoint_url.host_str().unwrap_or("").to_owned(), endpoint_url.port_or_known_default()) == destination
+                }) {
+                    bail!("scenario destination overlaps egress endpoint");
                 }
                 if case.outbound_tag.is_empty()
                     || case.outbound_tag.len() > 96
