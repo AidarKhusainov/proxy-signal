@@ -1,0 +1,207 @@
+use anyhow::{bail, Context, Result};
+use reqwest::Url;
+use serde::Deserialize;
+use std::{collections::HashSet, io::Read, net::{IpAddr, SocketAddr}, path::PathBuf, time::Duration};
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    pub version: u8,
+    pub interval_seconds: u64,
+    pub timeout_seconds: u64,
+    pub parallelism: usize,
+    pub state_file: PathBuf,
+    pub endpoints: Vec<Endpoint>,
+    pub sources: Vec<Source>,
+    pub telegram: Option<Telegram>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Endpoint {
+    pub id: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Source {
+    File {
+        id: String,
+        path: PathBuf,
+        #[serde(default)]
+        expected_exit_ips: Vec<IpAddr>,
+    },
+    Https {
+        id: String,
+        url: String,
+        #[serde(default)]
+        headers: std::collections::BTreeMap<String, PathBuf>,
+        #[serde(default)]
+        expected_exit_ips: Vec<IpAddr>,
+    },
+}
+
+impl Source {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::File { id, .. } | Self::Https { id, .. } => id,
+        }
+    }
+    pub fn expected_exit_ips(&self) -> &[IpAddr] {
+        match self {
+            Self::File { expected_exit_ips, .. } | Self::Https { expected_exit_ips, .. } => {
+                expected_exit_ips
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Telegram {
+    pub bot_token_file: PathBuf,
+    pub chat_id: String,
+}
+
+pub fn load(path: &str) -> Result<Config> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).context("read config")?
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes).context("read config")?;
+    if bytes.len() > 64 * 1024 {
+        bail!("config too large");
+    }
+    let config: Config = serde_yaml::from_slice(&bytes).context("parse config")?;
+    config.validate()?;
+    Ok(config)
+}
+
+impl Config {
+    fn validate(&self) -> Result<()> {
+        if self.version != 1
+            || !(30..=86_400).contains(&self.interval_seconds)
+            || !(5..=60).contains(&self.timeout_seconds)
+            || !(1..=4).contains(&self.parallelism)
+            || !(1..=3).contains(&self.endpoints.len())
+            || !(1..=32).contains(&self.sources.len())
+        {
+            bail!("unsupported version or out-of-range limits");
+        }
+        let mut ids = HashSet::new();
+        for endpoint in &self.endpoints {
+            if !valid_id(&endpoint.id) || !ids.insert(&endpoint.id) {
+                bail!("invalid or duplicated endpoint id");
+            }
+            validate_https(&endpoint.url)?;
+        }
+        ids.clear();
+        for source in &self.sources {
+            if !valid_id(source.id()) || !ids.insert(source.id()) {
+                bail!("invalid or duplicated source id");
+            }
+            if let Source::Https { url, headers, .. } = source {
+                validate_https(url)?;
+                if headers.len() > 8 {
+                    bail!("too many authorization headers");
+                }
+                for name in headers.keys() {
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                        .context("invalid header name")?;
+                }
+            }
+            if source.expected_exit_ips().len() > 16 || source.expected_exit_ips().iter().any(|ip| !is_public_ip(*ip)) {
+                bail!("too many expected exit IPs");
+            }
+        }
+        if self.state_file.as_os_str().is_empty() {
+            bail!("state_file is required");
+        }
+        if let Some(tg) = &self.telegram {
+            if tg.chat_id.is_empty() || tg.chat_id.len() > 80 || !tg.chat_id.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+                bail!("invalid Telegram chat ID");
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_https(s: &str) -> Result<Url> {
+    let url = Url::parse(s).context("invalid HTTPS URL")?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        bail!("only HTTPS URLs without embedded credentials are supported");
+    }
+    // Only operator-configured hostnames, never loopback/metadata IP literals.
+    let host = url.host_str().context("missing hostname")?;
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local")
+        || host.starts_with('[') || host.parse::<IpAddr>().is_ok() {
+        bail!("URL must use a public DNS hostname");
+    }
+    Ok(url)
+}
+
+/// Resolve and pin direct connections so DNS rebinding cannot point native
+/// HTTP requests (including requests with auth headers) at internal services.
+pub async fn public_resolution(url: &str, budget: Duration) -> Result<(String, Vec<SocketAddr>)> {
+    let parsed = validate_https(url)?;
+    let host = parsed.host_str().context("missing hostname")?.to_owned();
+    let port = parsed.port_or_known_default().context("missing port")?;
+    let addresses: Vec<_> = tokio::time::timeout(budget, tokio::net::lookup_host((host.as_str(), port)))
+        .await.context("dns_timeout")??.collect();
+    if addresses.is_empty() || addresses.iter().any(|addr| !is_public_ip(addr.ip())) {
+        bail!("non_public_http_destination");
+    }
+    Ok((host, addresses))
+}
+
+pub fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(ip.is_private() || ip.is_loopback() || ip.is_link_local()
+                || ip.is_multicast() || ip.is_broadcast() || ip.is_unspecified()
+                || ip.is_documentation() || a == 0 || a >= 224
+                || a == 100 && (64..=127).contains(&b)
+                || a == 192 && b == 0 && c == 0
+                || a == 192 && b == 88 && c == 99
+                || a == 198 && (b == 18 || b == 19))
+        }
+        IpAddr::V6(ip) => {
+            // Conservative global-unicast check; reject documentation ranges.
+            (ip.segments()[0] & 0xe000) == 0x2000
+                && !(ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
+        }
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_private_or_non_https_targets() {
+        assert!(validate_https("http://example.com/").is_err());
+        assert!(validate_https("https://127.0.0.1/").is_err());
+        assert!(validate_https("https://169.254.169.254/").is_err());
+        assert!(validate_https("https://user:secret@example.com/").is_err());
+        assert!(validate_https("https://example.com/ip").is_ok());
+        for ip in ["198.18.0.1", "192.0.0.4", "2001:db8::1", "fc00::1"] {
+            assert!(!is_public_ip(ip.parse().unwrap()));
+        }
+        for ip in ["1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(is_public_ip(ip.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_yaml_options() {
+        let yaml = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 15\nparallelism: 1\nstate_file: /tmp/state\nendpoints: []\nsources: []\nsecret: plaintext\n";
+        assert!(serde_yaml::from_str::<Config>(yaml).is_err());
+    }
+}
