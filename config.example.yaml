@@ -12,6 +12,15 @@ sources:
     path: /profiles/example.json
     # Optional: constrain the expected public exit addresses.
     expected_exit_ips: []
+    # Optional stage-3 scenario. Use only with a test profile and a known test domain.
+    # scenarios:
+    #   - id: direct-check
+    #     url: https://example.org/
+    #     route: direct
+    #     outbound_tag: direct
+    #     dns:
+    #       server: "UDP:1.1.1.1:53"
+    #       expected_ips: [93.184.215.14]
   # - id: authenticated-profile
   #   kind: https
   #   url: https://subscription.example.org/config.json

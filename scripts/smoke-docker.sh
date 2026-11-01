@@ -52,3 +52,82 @@ case "$output" in
         echo 'PASS: Xray ran the full profile, and failed VLESS traffic was not reported as OK' ;;
     *) echo 'FAIL: no confirmed proxy failure; check direct HTTPS connectivity and Xray startup' >&2; exit 1 ;;
 esac
+
+# A separate, nonproduction diagnostic profile exercises real Xray access logs.
+# The egress check deliberately fails because its default VLESS server is absent.
+cat > "$tmp/scenarios.yaml" <<'YAML'
+version: 1
+interval_seconds: 300
+timeout_seconds: 20
+parallelism: 1
+state_file: /data/state.json
+endpoints:
+  - id: ipify
+    url: https://api.ipify.org
+sources:
+  - id: routes
+    kind: file
+    path: /profiles/routes.json
+    scenarios:
+      - id: allowed
+        url: https://example.com/
+        route: direct
+        outbound_tag: direct
+      - id: blocked
+        url: https://example.org/
+        route: block
+        outbound_tag: blocked
+      - id: wrong-route
+        url: https://www.example.net/
+        route: direct
+        outbound_tag: direct
+      - id: dns-without-evidence
+        url: https://www.example.com/
+        route: direct
+        outbound_tag: direct
+        dns:
+          server: "UDP:1.1.1.1:53"
+          expected_ips: [93.184.215.14]
+YAML
+cat > "$tmp/routes.json" <<'JSON'
+{
+  "dns": {"servers": ["1.1.1.1"]},
+  "routing": {"rules": [
+    {"type": "field", "domain": ["full:example.com", "full:www.example.com"], "outboundTag": "direct"},
+    {"type": "field", "domain": ["full:example.org", "full:www.example.net"], "outboundTag": "blocked"}
+  ]},
+  "outbounds": [
+    {"tag": "broken", "protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": 19999, "users": [{"id": "00000000-0000-0000-0000-000000000001", "encryption": "none"}]}]}},
+    {"tag": "direct", "protocol": "freedom"},
+    {"tag": "blocked", "protocol": "blackhole"}
+  ]
+}
+JSON
+
+set +e
+output=$(docker run --rm --read-only --user 65532:65532 \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 384m \
+    --tmpfs /tmp:rw,nosuid,noexec,size=16m,uid=65532,gid=65532,mode=0700 \
+    --tmpfs /data:rw,nosuid,noexec,size=4m,uid=65532,gid=65532,mode=0700 \
+    --mount "type=bind,src=$tmp/scenarios.yaml,dst=/etc/proxy-signal/config.yaml,readonly" \
+    --mount "type=bind,src=$tmp/routes.json,dst=/profiles/routes.json,readonly" \
+    proxy-signal:smoke /etc/proxy-signal/config.yaml --once 2>&1)
+result=$?
+set -e
+printf '%s\n' "$output"
+if [ "$result" -eq 0 ]; then
+    echo 'FAIL: deliberately broken default VLESS route reported healthy' >&2
+    exit 1
+fi
+for evidence in \
+    'target=scenario/routes/allowed status=OK evidence=routing_verified' \
+    'target=scenario/routes/blocked status=OK evidence=routing_verified' \
+    'target=scenario/routes/wrong-route status=FAILED evidence=unexpected_outbound' \
+    'target=scenario/routes/dns-without-evidence status=UNKNOWN evidence=dns_not_observed'
+do
+    case "$output" in
+        *"$evidence"*) ;;
+        *) echo "FAIL: missing Xray scenario evidence: $evidence" >&2; exit 1 ;;
+    esac
+done
+echo 'PASS: actual Xray routing evidence verified; missing DNS evidence stayed UNKNOWN'

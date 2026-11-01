@@ -1,11 +1,15 @@
 use crate::{
-    config::Endpoint,
+    config::{Endpoint, Scenario},
+    incident::{Observation, Status},
     probe::{self, TargetResult},
+    scenario,
 };
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
+    io::Read,
     net::{IpAddr, SocketAddr, TcpListener},
+    path::Path,
     process::Stdio,
     time::Duration,
 };
@@ -82,19 +86,39 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     Ok(config)
 }
 
-/// Runs one bounded child per profile. The official Xray binary is supplied by the container.
+/// One supervised Xray process runs both ordinary egress probes and optional
+/// DNS/routing cases without replacing the original DNS, routing or outbounds.
+pub struct CheckResults {
+    pub egress: Vec<TargetResult>,
+    pub scenarios: Vec<Observation>,
+}
+
 pub async fn check(
     config: Value,
     endpoints: &[(Endpoint, Option<IpAddr>)],
     allowed: &[IpAddr],
+    scenarios: &[Scenario],
     budget: Duration,
-) -> Result<Vec<TargetResult>> {
+) -> Result<CheckResults> {
     let socket = TcpListener::bind("127.0.0.1:0").context("loopback_bind")?;
     let port = socket.local_addr()?.port();
     drop(socket);
-    let config = prepare(config, port)?;
+    let original = config.clone();
+    let mut config = prepare(config, port)?;
 
     let dir = TempDir::new().context("temporary_directory")?;
+    let access_path = dir.path().join("access.log");
+    let error_path = dir.path().join("error.log");
+    if !scenarios.is_empty() {
+        // The engine writes diagnostic records to private temporary files.
+        // Never emit raw logs (they can contain domains and profile data).
+        config["log"] = json!({
+            "access": access_path.to_string_lossy(),
+            "error": error_path.to_string_lossy(),
+            "loglevel": "info",
+            "dnsLog": true
+        });
+    }
     let path = dir.path().join("config.json");
     std::fs::write(&path, serde_json::to_vec(&config)?).context("temporary_config")?;
     #[cfg(unix)]
@@ -122,11 +146,12 @@ pub async fn check(
             .await
             .context("xray_start_timeout")??;
         let proxy = format!("http://127.0.0.1:{port}");
-        let mut results = Vec::with_capacity(endpoints.len());
+        // Ordinary profile checks have priority; opt-in scenarios cannot starve egress.
+        let mut egress = Vec::with_capacity(endpoints.len());
         for (endpoint, direct) in endpoints {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                results.push(TargetResult::Unknown);
+            if remaining.is_zero() || direct.is_none() {
+                egress.push(TargetResult::Unknown);
                 continue;
             }
             let response = timeout_at(
@@ -138,14 +163,66 @@ pub async fn check(
                 Ok(value) => probe::compare(value, *direct, allowed),
                 Err(_) => TargetResult::Failed,
             };
-            results.push(observation);
+            egress.push(observation);
         }
-        Ok(results)
+        let mut attempts: Vec<std::result::Result<bool, Observation>> =
+            Vec::with_capacity(scenarios.len());
+        for case in scenarios {
+            if let Some(unsupported) = scenario::static_check(&original, case) {
+                attempts.push(Err(unsupported));
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                attempts.push(Err(Observation::new(Status::Unknown, "scenario_timeout")));
+                continue;
+            }
+            let response =
+                timeout_at(deadline, probe::probe_https(&case.url, &proxy, remaining)).await;
+            attempts.push(Ok(response.unwrap_or(false)));
+        }
+
+        Ok((egress, attempts))
     }
     .await;
     child.stop().await;
-    // The temporary configuration remains on disk until the child has been reaped.
-    result
+    // Read only after process termination; cap both logs and fail closed on
+    // oversized, invalid or inaccessible diagnostic data.
+    let logs = if scenarios.is_empty() {
+        None
+    } else {
+        Some((read_log(&access_path), read_log(&error_path)))
+    };
+    result.map(|(egress, attempts)| {
+        let scenarios = attempts
+            .into_iter()
+            .zip(scenarios)
+            .map(|(attempt, case)| match attempt {
+                Err(observation) => observation,
+                Ok(http_ok) => match &logs {
+                    Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
+                        scenario::evaluate(case, http_ok, access, error.as_deref().unwrap_or(""))
+                    }
+                    _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
+                },
+            })
+            .collect();
+        CheckResults { egress, scenarios }
+    })
+}
+
+/// Never load unbounded untrusted Xray output into the monitor.
+fn read_log(path: &Path) -> Option<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 128 * 1024 {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 async fn ready(child: &mut Child, port: u16) -> Result<()> {

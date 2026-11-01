@@ -39,6 +39,27 @@ pub async fn get_exit_ip(
     Ok(ip)
 }
 
+/// A bounded HTTPS request via the same local Xray HTTP inbound used for egress probes.
+/// Route selection must be verified independently using Xray access evidence.
+pub async fn probe_https(url: &str, proxy: &str, timeout: Duration) -> bool {
+    if timeout.is_zero() {
+        return false;
+    }
+    let Ok(client) = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .proxy(match Proxy::all(proxy) {
+            Ok(proxy) => proxy,
+            Err(_) => return false,
+        })
+        .timeout(timeout)
+        .build()
+    else {
+        return false;
+    };
+    matches!(client.get(url).send().await, Ok(response) if response.status().is_success())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetResult {
     Passed,

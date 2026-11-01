@@ -1,6 +1,7 @@
 mod config;
 mod incident;
 mod probe;
+mod scenario;
 mod source;
 mod telegram;
 mod xray;
@@ -142,6 +143,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         format!("profile/{}", entry.id()),
                         Observation::new(Status::Unknown, "source_unavailable"),
                     ));
+                    unavailable_scenarios(&mut results, &entry, "source_unavailable");
                 }
                 Err(_) => eprintln!("ProxySignal: source_task_error"),
             }
@@ -156,6 +158,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     format!("profile/{}", entry.id()),
                     Observation::new(Status::Unknown, "source_task_error"),
                 ));
+                unavailable_scenarios(&mut results, entry, "source_task_error");
             }
         }
     }
@@ -168,39 +171,88 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             let targets = endpoints.clone();
             tasks.spawn(async move {
                 let start = Instant::now();
-                let observation = if xray::prepare(document.clone(), 9876).is_err() {
-                    Observation::new(Status::Unsupported, "profile_incompatible")
-                } else if targets.iter().all(|(_, ip)| ip.is_none()) {
-                    Observation::new(Status::Unknown, "no_direct_baseline")
+                let scenario_rows = |status: Status, code: &'static str| {
+                    entry
+                        .scenarios()
+                        .iter()
+                        .map(|case| {
+                            (
+                                format!("scenario/{}/{}", entry.id(), case.id),
+                                if status == Status::Unknown {
+                                    scenario::static_check(&document, case)
+                                        .unwrap_or(Observation::new(status, code))
+                                } else {
+                                    Observation::new(status, code)
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let (observation, checks) = if xray::prepare(document.clone(), 9876).is_err() {
+                    (
+                        Observation::new(Status::Unsupported, "profile_incompatible"),
+                        scenario_rows(Status::Unsupported, "profile_incompatible"),
+                    )
+                } else if targets.iter().all(|(_, ip)| ip.is_none()) && entry.scenarios().is_empty()
+                {
+                    (
+                        Observation::new(Status::Unknown, "no_direct_baseline"),
+                        Vec::new(),
+                    )
                 } else {
-                    match xray::check(document, &targets, entry.expected_exit_ips(), timeout).await
+                    match xray::check(
+                        document.clone(),
+                        &targets,
+                        entry.expected_exit_ips(),
+                        entry.scenarios(),
+                        timeout,
+                    )
+                    .await
                     {
                         Ok(steps) => {
-                            for ((endpoint, _), step) in targets.iter().zip(&steps) {
+                            for ((endpoint, _), step) in targets.iter().zip(&steps.egress) {
                                 println!(
                                     "target=profile/{} endpoint={} proof={step:?}",
                                     entry.id(),
                                     endpoint.id
                                 );
                             }
-                            classify(&steps)
+                            let checks = entry
+                                .scenarios()
+                                .iter()
+                                .zip(steps.scenarios)
+                                .map(|(case, result)| {
+                                    (format!("scenario/{}/{}", entry.id(), case.id), result)
+                                })
+                                .collect();
+                            let observation = if targets.iter().all(|(_, ip)| ip.is_none()) {
+                                Observation::new(Status::Unknown, "no_direct_baseline")
+                            } else {
+                                classify(&steps.egress)
+                            };
+                            (observation, checks)
                         }
-                        Err(_) => Observation::new(Status::Unknown, "xray_runtime_error"),
+                        Err(_) => (
+                            Observation::new(Status::Unknown, "xray_runtime_error"),
+                            scenario_rows(Status::Unknown, "xray_runtime_error"),
+                        ),
                     }
                 };
                 (
                     format!("profile/{}", entry.id()),
                     observation,
                     start.elapsed(),
+                    checks,
                 )
             });
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed)) = result {
+            if let Ok((key, observation, elapsed, scenarios)) = result {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
                 results.push((key, observation));
+                results.extend(scenarios);
             } else {
                 eprintln!("ProxySignal: probe_task_error");
             }
@@ -209,10 +261,20 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             let key = format!("profile/{}", entry.id());
             if !completed.contains(&key) {
                 results.push((key, Observation::new(Status::Unknown, "probe_task_error")));
+                unavailable_scenarios(&mut results, entry, "probe_task_error");
             }
         }
     }
     results
+}
+
+fn unavailable_scenarios(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
+    for case in entry.scenarios() {
+        results.push((
+            format!("scenario/{}/{}", entry.id(), case.id),
+            Observation::new(Status::Unknown, code),
+        ));
+    }
 }
 
 fn classify(steps: &[TargetResult]) -> Observation {
