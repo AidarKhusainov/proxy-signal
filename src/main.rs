@@ -109,24 +109,52 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
     }
     let mut results = Vec::new();
     let mut profiles = Vec::new();
-    for entry in &config.sources {
-        match tokio::time::timeout(timeout, source::load(entry, timeout)).await {
-            Ok(Ok(document)) => {
-                results.push((
-                    format!("source/{}", entry.id()),
-                    Observation::new(Status::Ok, "source_loaded"),
-                ));
-                profiles.push((entry.clone(), document));
+    // Bound subscription refreshes as well as Xray processes. One slow source
+    // must not block every unrelated source in the same cycle.
+    for batch in config.sources.chunks(config.parallelism) {
+        let mut loads = JoinSet::new();
+        for entry in batch {
+            let entry = entry.clone();
+            loads.spawn(async move {
+                let loaded = tokio::time::timeout(timeout, source::load(&entry, timeout)).await;
+                (entry, loaded)
+            });
+        }
+        let mut completed = std::collections::HashSet::new();
+        while let Some(result) = loads.join_next().await {
+            match result {
+                Ok((entry, Ok(Ok(document)))) => {
+                    completed.insert(entry.id().to_string());
+                    results.push((
+                        format!("source/{}", entry.id()),
+                        Observation::new(Status::Ok, "source_loaded"),
+                    ));
+                    profiles.push((entry, document));
+                }
+                Ok((entry, _)) => {
+                    completed.insert(entry.id().to_string());
+                    // A source incident is distinct from a VPN failure.
+                    results.push((
+                        format!("source/{}", entry.id()),
+                        Observation::new(Status::Failed, "source_unavailable"),
+                    ));
+                    results.push((
+                        format!("profile/{}", entry.id()),
+                        Observation::new(Status::Unknown, "source_unavailable"),
+                    ));
+                }
+                Err(_) => eprintln!("ProxySignal: source_task_error"),
             }
-            _ => {
-                // A source incident is distinct from a VPN failure.
+        }
+        for entry in batch {
+            if !completed.contains(entry.id()) {
                 results.push((
                     format!("source/{}", entry.id()),
-                    Observation::new(Status::Failed, "source_unavailable"),
+                    Observation::new(Status::Unknown, "source_task_error"),
                 ));
                 results.push((
                     format!("profile/{}", entry.id()),
-                    Observation::new(Status::Unknown, "source_unavailable"),
+                    Observation::new(Status::Unknown, "source_task_error"),
                 ));
             }
         }

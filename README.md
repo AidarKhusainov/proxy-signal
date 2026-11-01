@@ -48,7 +48,7 @@ docker compose build
 docker compose run --rm proxy-signal /etc/proxy-signal/config.yaml --once
 ```
 
-Offline tests cover full-profile retention, inbound-dependent unsupported paths, direct-egress false positives, multi-endpoint aggregation, incident confirmation and persistence. **A real Docker/network smoke test with test VPN credentials is still required before production use.** Keep any such test on a controlled, nonproduction profile.
+Offline tests cover full-profile retention, inbound-dependent unsupported paths, direct-egress false positives, multi-endpoint aggregation, incident confirmation and persistence. Run `sh scripts/smoke-docker.sh` on a host with Docker and outbound HTTPS to validate image construction, supervised Xray startup, full-profile execution and a **deliberately failed** synthetic VLESS connection without production credentials. It must report `FAILED`, never `OK`. A real positive VPN check with a non-production profile and a **different externally observable exit IP** is still required before production use.
 
 ## Additional coverage needed
 

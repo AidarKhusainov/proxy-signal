@@ -14,7 +14,8 @@ COPY --from=xray /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray /usr/local/share/xray /usr/local/share/xray
 COPY --from=build /build/target/release/proxy-signal /usr/local/bin/proxy-signal
 ENV XRAY_LOCATION_ASSET=/usr/local/share/xray
-RUN install -d -m 0700 -o 65532 -g 65532 /data
+RUN install -d -m 0755 /etc/proxy-signal /profiles \
+    && install -d -m 0700 -o 65532 -g 65532 /data
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/proxy-signal"]
 CMD ["/etc/proxy-signal/config.yaml"]
