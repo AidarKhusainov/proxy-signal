@@ -146,23 +146,7 @@ pub async fn check(
             .await
             .context("xray_start_timeout")??;
         let proxy = format!("http://127.0.0.1:{port}");
-        let mut attempts: Vec<std::result::Result<bool, Observation>> =
-            Vec::with_capacity(scenarios.len());
-        for case in scenarios {
-            if let Some(unsupported) = scenario::static_check(&original, case) {
-                attempts.push(Err(unsupported));
-                continue;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                attempts.push(Err(Observation::new(Status::Unknown, "scenario_timeout")));
-                continue;
-            }
-            let response =
-                timeout_at(deadline, probe::probe_https(&case.url, &proxy, remaining)).await;
-            attempts.push(Ok(response.unwrap_or(false)));
-        }
-
+        // Ordinary profile checks have priority; opt-in scenarios cannot starve egress.
         let mut egress = Vec::with_capacity(endpoints.len());
         for (endpoint, direct) in endpoints {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -181,6 +165,23 @@ pub async fn check(
             };
             egress.push(observation);
         }
+        let mut attempts: Vec<std::result::Result<bool, Observation>> =
+            Vec::with_capacity(scenarios.len());
+        for case in scenarios {
+            if let Some(unsupported) = scenario::static_check(&original, case) {
+                attempts.push(Err(unsupported));
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                attempts.push(Err(Observation::new(Status::Unknown, "scenario_timeout")));
+                continue;
+            }
+            let response =
+                timeout_at(deadline, probe::probe_https(&case.url, &proxy, remaining)).await;
+            attempts.push(Ok(response.unwrap_or(false)));
+        }
+
         Ok((egress, attempts))
     }
     .await;
