@@ -201,7 +201,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     )
                 } else {
                     match xray::check(
-                        document,
+                        document.clone(),
                         &targets,
                         entry.expected_exit_ips(),
                         entry.scenarios(),
