@@ -57,10 +57,15 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
     let destination = format!("{}:{}", host, url.port_or_known_default().unwrap_or(443));
     let mut chosen: Option<&str> = None;
     for line in access.lines() {
-        let Some((_, entry)) = line.split_once(" accepted tcp:") else {
+        let Some((_, entry)) = line.split_once(" accepted ") else {
             continue;
         };
-        let Some(entry) = entry.strip_prefix(&destination) else {
+        // Xray's HTTP CONNECT inbound logs the HTTP request URL (host:port),
+        // while other inbounds may log a network destination (tcp:host:port).
+        let Some(entry) = entry
+            .strip_prefix(&destination)
+            .or_else(|| entry.strip_prefix(&format!("tcp:{destination}")))
+        else {
             continue;
         };
         let Some(entry) = entry.strip_prefix(" [proxy-signal-probe-in") else {
@@ -68,7 +73,8 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
         };
         // Xray emits both "->" and ">>" depending on the routing path.
         let Some(entry) = entry
-            .strip_prefix(" -> ")
+            .strip_prefix(" ==> ")
+            .or_else(|| entry.strip_prefix(" -> "))
             .or_else(|| entry.strip_prefix(" >> "))
         else {
             continue;
@@ -177,7 +183,7 @@ mod tests {
     }
 
     const DIRECT_LOG: &str =
-        "2026/01/01 00:00:00 127.0.0.1:2345 accepted tcp:example.org:443 [proxy-signal-probe-in -> direct]";
+        "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted example.org:443 [proxy-signal-probe-in ==> direct]";
     const DNS_LOG: &str =
         "2026/01/01 00:00:00 [Info] app/dns: UDP:1.1.1.1:53 got answer: example.org. TypeA -> [93.184.215.14] 5ms";
 
@@ -195,7 +201,7 @@ mod tests {
             evaluate(
                 &direct,
                 true,
-                &DIRECT_LOG.replace("-> direct", "-> vpn"),
+                &DIRECT_LOG.replace("==> direct", "==> vpn"),
                 ""
             )
             .status,
@@ -214,7 +220,7 @@ mod tests {
             evaluate(
                 &block,
                 false,
-                &DIRECT_LOG.replace("-> direct", "-> blocked"),
+                &DIRECT_LOG.replace("==> direct", "==> blocked"),
                 ""
             )
             .status,
@@ -287,8 +293,10 @@ mod tests {
     #[test]
     fn real_xray_log_variants_and_ambiguous_entries() {
         let direct = case(ExpectedRoute::Direct, false);
-        let routed = DIRECT_LOG.replace(" -> direct", " >> direct");
+        let routed = DIRECT_LOG.replace(" ==> direct", " >> direct");
         assert_eq!(evaluate(&direct, true, &routed, "").status, Status::Ok);
+        assert_eq!(evaluate(&direct, true, &DIRECT_LOG.replace(" ==> direct", " -> direct"), "").status, Status::Ok);
+        assert_eq!(evaluate(&direct, true, &format!("2026/01/01 00:00:00 from 127.0.0.1:2345 accepted tcp:example.org:443 [proxy-signal-probe-in >> direct]"), "").status, Status::Ok);
         assert_eq!(
             evaluate(&direct, true, &format!("{routed}\n{routed}"), "").status,
             Status::Unknown
