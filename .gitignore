@@ -27,6 +27,8 @@
 !.env.example
 !.env.sample
 /secrets/
+/profiles/
+/config.yaml
 *.secret
 *.key
 *.pem

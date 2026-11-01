@@ -1,0 +1,20 @@
+services:
+  proxy-signal:
+    build: .
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 384m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,uid=65532,gid=65532,mode=0700
+    volumes:
+      - ./config.yaml:/etc/proxy-signal/config.yaml:ro
+      - ./profiles:/profiles:ro
+      - ./secrets:/run/secrets:ro
+      - proxy-signal-data:/data
+volumes:
+  proxy-signal-data:

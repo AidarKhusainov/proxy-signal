@@ -1,0 +1,7 @@
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [],
+  "outbounds": [
+    {"tag": "direct", "protocol": "freedom"}
+  ]
+}

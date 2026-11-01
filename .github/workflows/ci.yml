@@ -1,0 +1,39 @@
+name: Rust CI
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'compose.yaml'
+      - 'config.example.yaml'
+      - 'scripts/smoke-docker.sh'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: proxy-signal-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-targets
+      # Release/acceptance check only; avoid a Docker rebuild on every PR push.
+      - name: Docker Compose and Xray smoke
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p profiles secrets
+          cp config.example.yaml config.yaml
+          docker compose config --quiet
+          sh scripts/smoke-docker.sh

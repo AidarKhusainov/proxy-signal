@@ -1,0 +1,25 @@
+version: 1
+interval_seconds: 300
+timeout_seconds: 20
+parallelism: 2
+state_file: /data/state.json
+endpoints:
+  - id: ipify
+    url: https://api.ipify.org
+sources:
+  - id: test-profile
+    kind: file
+    path: /profiles/example.json
+    # Optional: constrain the expected public exit addresses.
+    expected_exit_ips: []
+  # - id: authenticated-profile
+  #   kind: https
+  #   url: https://subscription.example.org/config.json
+  #   headers:
+  #     Authorization: /run/secrets/subscription-auth
+  #     X-HWID: /run/secrets/hwid
+  #   expected_exit_ips: []
+# Telegram is optional. Uncomment to send state-change notifications.
+# telegram:
+#   bot_token_file: /run/secrets/telegram-token
+#   chat_id: "123456789"
