@@ -172,22 +172,38 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             tasks.spawn(async move {
                 let start = Instant::now();
                 let scenario_rows = |status: Status, code: &'static str| {
-                    entry.scenarios().iter().map(|case| (
-                        format!("scenario/{}/{}", entry.id(), case.id),
-                        Observation::new(status, code),
-                    )).collect::<Vec<_>>()
+                    entry
+                        .scenarios()
+                        .iter()
+                        .map(|case| {
+                            (
+                                format!("scenario/{}/{}", entry.id(), case.id),
+                                Observation::new(status, code),
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 };
                 let (observation, checks) = if xray::prepare(document.clone(), 9876).is_err() {
                     (
                         Observation::new(Status::Unsupported, "profile_incompatible"),
                         scenario_rows(Status::Unsupported, "profile_incompatible"),
                     )
-                } else if targets.iter().all(|(_, ip)| ip.is_none()) && entry.scenarios().is_empty() {
-                    (Observation::new(Status::Unknown, "no_direct_baseline"), Vec::new())
+                } else if targets.iter().all(|(_, ip)| ip.is_none()) && entry.scenarios().is_empty()
+                {
+                    (
+                        Observation::new(Status::Unknown, "no_direct_baseline"),
+                        Vec::new(),
+                    )
                 } else {
                     match xray::check(
-                        document, &targets, entry.expected_exit_ips(), entry.scenarios(), timeout
-                    ).await {
+                        document,
+                        &targets,
+                        entry.expected_exit_ips(),
+                        entry.scenarios(),
+                        timeout,
+                    )
+                    .await
+                    {
                         Ok(steps) => {
                             for ((endpoint, _), step) in targets.iter().zip(&steps.egress) {
                                 println!(
@@ -196,10 +212,13 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                     endpoint.id
                                 );
                             }
-                            let checks = entry.scenarios().iter().zip(steps.scenarios)
-                                .map(|(case, result)| (
-                                    format!("scenario/{}/{}", entry.id(), case.id), result,
-                                ))
+                            let checks = entry
+                                .scenarios()
+                                .iter()
+                                .zip(steps.scenarios)
+                                .map(|(case, result)| {
+                                    (format!("scenario/{}/{}", entry.id(), case.id), result)
+                                })
                                 .collect();
                             let observation = if targets.iter().all(|(_, ip)| ip.is_none()) {
                                 Observation::new(Status::Unknown, "no_direct_baseline")
