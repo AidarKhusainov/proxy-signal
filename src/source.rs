@@ -30,7 +30,7 @@ pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
                     .read_to_end(&mut secret)
                     .context("secret_read")?;
                 let secret = std::str::from_utf8(&secret).context("secret_invalid")?;
-                let value = secret.trim_end_matches(|c| c == '\r' || c == '\n');
+                let value = secret.trim_end_matches(['\r', '\n']);
                 if value.is_empty()
                     || value.len() > 2048
                     || value.bytes().any(|b| b == b'\r' || b == b'\n')
