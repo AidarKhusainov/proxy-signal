@@ -33,7 +33,8 @@ pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
     let compatible = match case.route {
         ExpectedRoute::Direct => protocol == "freedom",
         ExpectedRoute::Block => protocol == "blackhole",
-        ExpectedRoute::Proxy => protocol != "freedom" && protocol != "blackhole",
+        // Loopback and DNS outbounds are not evidence of an external proxy hop.
+        ExpectedRoute::Proxy => !matches!(protocol, "freedom" | "blackhole" | "loopback" | "dns"),
     };
     if compatible {
         None
@@ -379,15 +380,17 @@ mod tests {
             &proxy
         )
         .is_none());
-        assert_eq!(
-            static_check(
-                &json!({"outbounds": [{"tag":"vpn","protocol":"freedom"}]}),
-                &proxy
-            )
-            .unwrap()
-            .status,
-            Status::Unsupported
-        );
+        for protocol in ["freedom", "blackhole", "loopback", "dns"] {
+            assert_eq!(
+                static_check(
+                    &json!({"outbounds": [{"tag":"vpn","protocol":protocol}]}),
+                    &proxy
+                )
+                .unwrap()
+                .status,
+                Status::Unsupported
+            );
+        }
         assert_eq!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"vless"},{"tag":"vpn","protocol":"vless"}]}), &proxy).unwrap().status, Status::Unsupported);
     }
 }
