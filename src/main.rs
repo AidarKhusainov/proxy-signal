@@ -178,7 +178,12 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         .map(|case| {
                             (
                                 format!("scenario/{}/{}", entry.id(), case.id),
-                                Observation::new(status, code),
+                                if status == Status::Unknown {
+                                    scenario::static_check(&document, case)
+                                        .unwrap_or(Observation::new(status, code))
+                                } else {
+                                    Observation::new(status, code)
+                                },
                             )
                         })
                         .collect::<Vec<_>>()
