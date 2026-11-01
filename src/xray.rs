@@ -158,11 +158,8 @@ pub async fn check(
                 attempts.push(Err(Observation::new(Status::Unknown, "scenario_timeout")));
                 continue;
             }
-            let response = timeout_at(
-                deadline,
-                probe::probe_https(&case.url, &proxy, remaining),
-            )
-            .await;
+            let response =
+                timeout_at(deadline, probe::probe_https(&case.url, &proxy, remaining)).await;
             attempts.push(Ok(response.unwrap_or(false)));
         }
 
