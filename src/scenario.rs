@@ -230,7 +230,7 @@ mod tests {
             evaluate(
                 &block,
                 true,
-                &DIRECT_LOG.replace("-> direct", "-> blocked"),
+                &DIRECT_LOG.replace("==> direct", "==> blocked"),
                 ""
             )
             .status,
@@ -295,8 +295,13 @@ mod tests {
         let direct = case(ExpectedRoute::Direct, false);
         let routed = DIRECT_LOG.replace(" ==> direct", " >> direct");
         assert_eq!(evaluate(&direct, true, &routed, "").status, Status::Ok);
-        assert_eq!(evaluate(&direct, true, &DIRECT_LOG.replace(" ==> direct", " -> direct"), "").status, Status::Ok);
-        assert_eq!(evaluate(&direct, true, &format!("2026/01/01 00:00:00 from 127.0.0.1:2345 accepted tcp:example.org:443 [proxy-signal-probe-in >> direct]"), "").status, Status::Ok);
+        assert_eq!(
+            evaluate(&direct, true, &DIRECT_LOG.replace(" ==> direct", " -> direct"), "").status,
+            Status::Ok
+        );
+        const TCP_LOG: &str =
+            "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted tcp:example.org:443 [proxy-signal-probe-in >> direct]";
+        assert_eq!(evaluate(&direct, true, TCP_LOG, "").status, Status::Ok);
         assert_eq!(
             evaluate(&direct, true, &format!("{routed}\n{routed}"), "").status,
             Status::Unknown
