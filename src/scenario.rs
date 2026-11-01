@@ -8,7 +8,9 @@ use std::{collections::HashSet, net::IpAddr};
 /// Static compatibility is not runtime evidence. The tag must name a real outbound
 /// with the expected protocol class; selection is verified separately from Xray logs.
 pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
-    let outbounds = profile.get("outbounds")?.as_array()?;
+    let Some(outbounds) = profile.get("outbounds").and_then(Value::as_array) else {
+        return Some(Observation::new(Status::Unsupported, "scenario_missing_outbounds"));
+    };
     let selected: Vec<_> = outbounds
         .iter()
         .filter(|o| o.get("tag").and_then(Value::as_str) == Some(case.outbound_tag.as_str()))
@@ -16,7 +18,9 @@ pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
     if selected.len() != 1 {
         return Some(Observation::new(Status::Unsupported, "scenario_outbound_not_unique"));
     }
-    let protocol = selected[0].get("protocol").and_then(Value::as_str)?;
+    let Some(protocol) = selected[0].get("protocol").and_then(Value::as_str) else {
+        return Some(Observation::new(Status::Unsupported, "scenario_missing_protocol"));
+    };
     let compatible = match case.route {
         ExpectedRoute::Direct => protocol == "freedom",
         ExpectedRoute::Block => protocol == "blackhole",
@@ -185,7 +189,7 @@ mod tests {
     #[test]
     fn missing_or_duplicate_outbound_is_not_accepted() {
         let proxy = case(ExpectedRoute::Proxy, false);
-        assert_eq!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"vless"}]}), &proxy), None);
+        assert!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"vless"}]}), &proxy).is_none());
         assert_eq!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"freedom"}]}), &proxy).unwrap().status, Status::Unsupported);
         assert_eq!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"vless"},{"tag":"vpn","protocol":"vless"}]}), &proxy).unwrap().status, Status::Unsupported);
     }
