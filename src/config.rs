@@ -101,7 +101,7 @@ impl Config {
         }
         let mut ids = HashSet::new();
         for endpoint in &self.endpoints {
-            if !valid_id(&endpoint.id) || !ids.insert(&endpoint.id) {
+            if !valid_id(&endpoint.id) || !ids.insert(endpoint.id.as_str()) {
                 bail!("invalid or duplicated endpoint id");
             }
             validate_https(&endpoint.url)?;
