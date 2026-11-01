@@ -31,7 +31,7 @@ jobs:
       - run: cargo test --locked --all-targets
       # Release/acceptance check only; avoid a Docker rebuild on every PR push.
       - name: Docker Compose and Xray smoke
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.head_ref == 'feat/dns-routing-scenarios' # One-time isolated acceptance on PR #3
         run: |
           mkdir -p profiles secrets
           cp config.example.yaml config.yaml
