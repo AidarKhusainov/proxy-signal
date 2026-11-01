@@ -202,8 +202,8 @@ pub async fn check(
             .map(|(attempt, case)| match attempt {
                 Err(observation) => observation,
                 Ok(http_ok) => match &logs {
-                    Some((Some(access), Some(error))) => {
-                        scenario::evaluate(case, http_ok, access, error)
+                    Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
+                        scenario::evaluate(case, http_ok, access, error.as_deref().unwrap_or(""))
                     }
                     _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
                 },
