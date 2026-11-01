@@ -63,7 +63,8 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
         // Xray's HTTP CONNECT inbound logs the HTTP request URL (host:port),
         // while other inbounds may log a network destination (tcp:host:port).
         let Some(entry) = entry
-            .strip_prefix(&destination)
+            .strip_prefix(&format!("//{destination}"))
+            .or_else(|| entry.strip_prefix(&destination))
             .or_else(|| entry.strip_prefix(&format!("tcp:{destination}")))
         else {
             continue;
@@ -183,7 +184,7 @@ mod tests {
     }
 
     const DIRECT_LOG: &str =
-        "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted example.org:443 [proxy-signal-probe-in ==> direct]";
+        "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted //example.org:443 [proxy-signal-probe-in ==> direct]";
     const DNS_LOG: &str =
         "2026/01/01 00:00:00 [Info] app/dns: UDP:1.1.1.1:53 got answer: example.org. TypeA -> [93.184.215.14] 5ms";
 
@@ -305,6 +306,9 @@ mod tests {
             .status,
             Status::Ok
         );
+        const BARE_LOG: &str =
+            "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted example.org:443 [proxy-signal-probe-in >> direct]";
+        assert_eq!(evaluate(&direct, true, BARE_LOG, "").status, Status::Ok);
         const TCP_LOG: &str =
             "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted tcp:example.org:443 [proxy-signal-probe-in >> direct]";
         assert_eq!(evaluate(&direct, true, TCP_LOG, "").status, Status::Ok);
