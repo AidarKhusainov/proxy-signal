@@ -169,19 +169,30 @@ impl Config {
                     bail!("invalid or duplicate scenario id");
                 }
                 let url = validate_https(&case.url)?;
-                let destination = (url.host_str().unwrap_or("").to_owned(), url.port_or_known_default());
+                let destination = (
+                    url.host_str().unwrap_or("").to_owned(),
+                    url.port_or_known_default(),
+                );
                 if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
                 if self.endpoints.iter().any(|e| {
-                    let Ok(endpoint_url) = validate_https(&e.url) else { return false; };
-                    (endpoint_url.host_str().unwrap_or("").to_owned(), endpoint_url.port_or_known_default()) == destination
+                    let Ok(endpoint_url) = validate_https(&e.url) else {
+                        return false;
+                    };
+                    (
+                        endpoint_url.host_str().unwrap_or("").to_owned(),
+                        endpoint_url.port_or_known_default(),
+                    ) == destination
                 }) {
                     bail!("scenario destination overlaps egress endpoint");
                 }
                 if case.outbound_tag.is_empty()
                     || case.outbound_tag.len() > 96
-                    || !case.outbound_tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
+                    || !case
+                        .outbound_tag
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
                 {
                     bail!("invalid scenario outbound tag");
                 }
@@ -316,7 +327,10 @@ mod tests {
         let example = "kind: file\nid: node\npath: /tmp/profile.json\nscenarios:\n  - id: dns-direct\n    url: https://example.org/\n    route: direct\n    outbound_tag: direct\n    dns:\n      server: UDP:1.1.1.1:53\n      expected_ips: [93.184.215.14]\n";
         let new: Source = serde_yaml::from_str(example).unwrap();
         assert_eq!(new.scenarios().len(), 1);
-        assert!(serde_yaml::from_str::<Source>(&example.replace("route: direct", "route: invented")).is_err());
+        assert!(serde_yaml::from_str::<Source>(
+            &example.replace("route: direct", "route: invented")
+        )
+        .is_err());
     }
 
     #[test]
