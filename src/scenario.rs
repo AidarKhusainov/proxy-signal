@@ -296,7 +296,13 @@ mod tests {
         let routed = DIRECT_LOG.replace(" ==> direct", " >> direct");
         assert_eq!(evaluate(&direct, true, &routed, "").status, Status::Ok);
         assert_eq!(
-            evaluate(&direct, true, &DIRECT_LOG.replace(" ==> direct", " -> direct"), "").status,
+            evaluate(
+                &direct,
+                true,
+                &DIRECT_LOG.replace(" ==> direct", " -> direct"),
+                ""
+            )
+            .status,
             Status::Ok
         );
         const TCP_LOG: &str =
