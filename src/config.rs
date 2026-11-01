@@ -24,6 +24,33 @@ pub struct Config {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Scenario {
+    pub id: String,
+    pub url: String,
+    pub route: ExpectedRoute,
+    pub outbound_tag: String,
+    #[serde(default)]
+    pub dns: Option<DnsExpectation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedRoute {
+    Direct,
+    Proxy,
+    Block,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DnsExpectation {
+    /// Literal Xray upstream identifier from its DNS diagnostic log.
+    pub server: String,
+    pub expected_ips: Vec<IpAddr>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub id: String,
     pub url: String,
@@ -37,6 +64,8 @@ pub enum Source {
         path: PathBuf,
         #[serde(default)]
         expected_exit_ips: Vec<IpAddr>,
+        #[serde(default)]
+        scenarios: Vec<Scenario>,
     },
     Https {
         id: String,
@@ -45,6 +74,8 @@ pub enum Source {
         headers: std::collections::BTreeMap<String, PathBuf>,
         #[serde(default)]
         expected_exit_ips: Vec<IpAddr>,
+        #[serde(default)]
+        scenarios: Vec<Scenario>,
     },
 }
 
@@ -52,6 +83,11 @@ impl Source {
     pub fn id(&self) -> &str {
         match self {
             Self::File { id, .. } | Self::Https { id, .. } => id,
+        }
+    }
+    pub fn scenarios(&self) -> &[Scenario] {
+        match self {
+            Self::File { scenarios, .. } | Self::Https { scenarios, .. } => scenarios,
         }
     }
     pub fn expected_exit_ips(&self) -> &[IpAddr] {
@@ -107,6 +143,7 @@ impl Config {
             validate_https(&endpoint.url)?;
         }
         ids.clear();
+        let mut total_scenarios = 0;
         for source in &self.sources {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
@@ -119,6 +156,38 @@ impl Config {
                 for name in headers.keys() {
                     reqwest::header::HeaderName::from_bytes(name.as_bytes())
                         .context("invalid header name")?;
+                }
+            }
+            total_scenarios += source.scenarios().len();
+            if source.scenarios().len() > 8 || total_scenarios > 64 {
+                bail!("too many scenarios");
+            }
+            let mut scenario_ids = HashSet::new();
+            let mut destinations = HashSet::new();
+            for case in source.scenarios() {
+                if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
+                    bail!("invalid or duplicate scenario id");
+                }
+                let url = validate_https(&case.url)?;
+                let destination = (url.host_str().unwrap_or("").to_owned(), url.port_or_known_default());
+                if !destinations.insert(destination) {
+                    bail!("duplicate scenario destination");
+                }
+                if case.outbound_tag.is_empty()
+                    || case.outbound_tag.len() > 96
+                    || !case.outbound_tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
+                {
+                    bail!("invalid scenario outbound tag");
+                }
+                if let Some(dns) = &case.dns {
+                    if dns.server.is_empty()
+                        || dns.server.len() > 120
+                        || !dns.server.bytes().all(|b| b.is_ascii_graphic())
+                        || dns.expected_ips.is_empty()
+                        || dns.expected_ips.len() > 16
+                    {
+                        bail!("invalid DNS expectation");
+                    }
                 }
             }
             if source.expected_exit_ips().len() > 16
@@ -231,6 +300,17 @@ mod tests {
         for ip in ["1.1.1.1", "2606:4700:4700::1111"] {
             assert!(is_public_ip(ip.parse().unwrap()));
         }
+    }
+
+    #[test]
+    fn scenario_configuration_is_optional_and_strict() {
+        let yaml = "kind: file\nid: node\npath: /tmp/profile.json\n";
+        let old: Source = serde_yaml::from_str(yaml).unwrap();
+        assert!(old.scenarios().is_empty());
+        let example = "kind: file\nid: node\npath: /tmp/profile.json\nscenarios:\n  - id: dns-direct\n    url: https://example.org/\n    route: direct\n    outbound_tag: direct\n    dns:\n      server: UDP:1.1.1.1:53\n      expected_ips: [93.184.215.14]\n";
+        let new: Source = serde_yaml::from_str(example).unwrap();
+        assert_eq!(new.scenarios().len(), 1);
+        assert!(serde_yaml::from_str::<Source>(&example.replace("route: direct", "route: invented")).is_err());
     }
 
     #[test]
