@@ -1,6 +1,12 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, io::Write, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Write,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -65,14 +71,22 @@ pub struct Notice {
 
 impl Default for State {
     fn default() -> Self {
-        Self { version: 1, records: BTreeMap::new(), pending: Vec::new() }
+        Self {
+            version: 1,
+            records: BTreeMap::new(),
+            pending: Vec::new(),
+        }
     }
 }
 
 impl State {
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() { return Ok(Self::default()); }
-        if fs::metadata(path)?.len() > 128 * 1024 { anyhow::bail!("state_oversize"); }
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        if fs::metadata(path)?.len() > 128 * 1024 {
+            anyhow::bail!("state_oversize");
+        }
         let data = fs::read(path).context("state_read")?;
         let state: State = serde_json::from_slice(&data).context("state_invalid")?;
         if state.version != 1 || state.pending.len() > 128 || state.records.len() > 128 {
@@ -86,9 +100,12 @@ impl State {
         let mut notify = None;
         match o.status {
             Status::Failed | Status::Degraded => {
-                record.streak = if record.last_status == Some(o.status) && record.last_code == o.code {
-                    record.streak.saturating_add(1)
-                } else { 1 };
+                record.streak =
+                    if record.last_status == Some(o.status) && record.last_code == o.code {
+                        record.streak.saturating_add(1)
+                    } else {
+                        1
+                    };
                 if record.streak >= 2 && record.active != Some(o.status) {
                     record.active = Some(o.status);
                     notify = Some(o.status);
@@ -100,7 +117,9 @@ impl State {
                     notify = Some(Status::Ok);
                 }
             }
-            Status::Unknown | Status::Unsupported => { record.streak = 0; }
+            Status::Unknown | Status::Unsupported => {
+                record.streak = 0;
+            }
         }
         record.last_status = Some(o.status);
         record.last_code = o.code.to_string();
@@ -115,21 +134,34 @@ impl State {
         // Preserve transition order: delivering "recovered" without its preceding
         // outage would be misleading after a temporary Telegram failure.
         // Oldest events are discarded only if the bounded queue is saturated.
-        if self.pending.len() == 128 { self.pending.remove(0); }
+        if self.pending.len() == 128 {
+            self.pending.remove(0);
+        }
         {
-            let when = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            self.pending.push(Notice { key: key.to_string(), status, when });
+            let when = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            self.pending.push(Notice {
+                key: key.to_string(),
+                status,
+                when,
+            });
         }
     }
 
     pub fn persist(&self, path: &Path) -> Result<()> {
-        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).context("state_parent")?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .context("state_parent")?;
         let json = serde_json::to_vec(self)?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent).context("state_temp_create")?;
         temporary.write_all(&json)?;
         temporary.as_file().sync_all()?;
         temporary.persist(path).context("state_rename")?;
-        if let Ok(dir) = fs::File::open(parent) { let _ = dir.sync_all(); }
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
 }
@@ -140,16 +172,32 @@ mod tests {
     #[test]
     fn confirms_only_matching_consecutive_failures_and_recovers_once() {
         let mut s = State::default();
-        s.observe("profile/a", Observation::new(Status::Failed, "timeout"), true);
+        s.observe(
+            "profile/a",
+            Observation::new(Status::Failed, "timeout"),
+            true,
+        );
         s.observe("profile/a", Observation::new(Status::Failed, "tls"), true);
         assert!(s.pending.is_empty());
         s.observe("profile/b", Observation::new(Status::Failed, "tls"), true);
         s.observe("profile/a", Observation::new(Status::Failed, "tls"), true);
         assert_eq!(s.pending.len(), 1);
-        s.observe("profile/a", Observation::new(Status::Unknown, "no_baseline"), true);
+        s.observe(
+            "profile/a",
+            Observation::new(Status::Unknown, "no_baseline"),
+            true,
+        );
         assert_eq!(s.pending.len(), 1);
-        s.observe("profile/a", Observation::new(Status::Ok, "egress_verified"), true);
-        s.observe("profile/a", Observation::new(Status::Ok, "egress_verified"), true);
+        s.observe(
+            "profile/a",
+            Observation::new(Status::Ok, "egress_verified"),
+            true,
+        );
+        s.observe(
+            "profile/a",
+            Observation::new(Status::Ok, "egress_verified"),
+            true,
+        );
         assert_eq!(s.pending.len(), 2);
         assert_eq!(s.pending[1].status, Status::Ok);
     }
@@ -159,12 +207,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("state.json");
         let mut s = State::default();
-        for _ in 0..2 { s.observe("profile/a", Observation::new(Status::Failed, "tls"), true); }
+        for _ in 0..2 {
+            s.observe("profile/a", Observation::new(Status::Failed, "tls"), true);
+        }
         s.persist(&file).unwrap();
         let mut loaded = State::load(&file).unwrap();
         loaded.observe("profile/a", Observation::new(Status::Failed, "tls"), true);
         assert_eq!(loaded.pending.len(), 1);
-        loaded.observe("profile/a", Observation::new(Status::Ok, "egress_verified"), true);
+        loaded.observe(
+            "profile/a",
+            Observation::new(Status::Ok, "egress_verified"),
+            true,
+        );
         assert_eq!(loaded.pending.len(), 2);
     }
 }

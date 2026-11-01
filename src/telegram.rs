@@ -1,4 +1,8 @@
-use crate::{config::Telegram, incident::{Notice, Status}, source::read_limited};
+use crate::{
+    config::Telegram,
+    incident::{Notice, Status},
+    source::read_limited,
+};
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde_json::Value;
@@ -13,14 +17,28 @@ pub struct Sender {
 impl Sender {
     pub fn new(config: &Telegram) -> Result<Self> {
         let mut bytes = Vec::new();
-        File::open(&config.bot_token_file).context("telegram_secret_read")?
-            .take(201).read_to_end(&mut bytes).context("telegram_secret_read")?;
-        let token = std::str::from_utf8(&bytes).context("telegram_secret_invalid")?.trim();
-        if token.is_empty() || token.len() > 200 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':' || b == b'_' || b == b'-') {
+        File::open(&config.bot_token_file)
+            .context("telegram_secret_read")?
+            .take(201)
+            .read_to_end(&mut bytes)
+            .context("telegram_secret_read")?;
+        let token = std::str::from_utf8(&bytes)
+            .context("telegram_secret_invalid")?
+            .trim();
+        if token.is_empty()
+            || token.len() > 200
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b':' || b == b'_' || b == b'-')
+        {
             bail!("telegram_secret_invalid");
         }
         Ok(Self {
-            client: Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(8)).build()?,
+            client: Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(8))
+                .build()?,
             url: format!("https://api.telegram.org/bot{token}/sendMessage"),
             chat_id: config.chat_id.clone(),
         })
@@ -38,7 +56,13 @@ impl Sender {
             "text": format!("ProxySignal · {message}\n{}\nВремя (Unix): {}", notice.key, notice.when),
             "disable_web_page_preview": true,
         });
-        let response = self.client.post(&self.url).json(&body).send().await.context("telegram_http")?;
+        let response = self
+            .client
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await
+            .context("telegram_http")?;
         if !response.status().is_success() {
             bail!("telegram_http_status");
         }

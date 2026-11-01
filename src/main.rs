@@ -5,7 +5,11 @@ mod source;
 mod telegram;
 mod xray;
 
-use crate::{config::{Config, Source}, incident::{Observation, State, Status}, probe::TargetResult};
+use crate::{
+    config::{Config, Source},
+    incident::{Observation, State, Status},
+    probe::TargetResult,
+};
 use anyhow::{Context, Result};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::{task::JoinSet, time::MissedTickBehavior};
@@ -16,7 +20,9 @@ type ResultRow = (String, Observation);
 async fn main() {
     if run().await.is_err() {
         // Errors can contain secrets (especially HTTP URLs); never print their chains.
-        eprintln!("ProxySignal: startup_or_storage_error (see configuration and filesystem permissions)");
+        eprintln!(
+            "ProxySignal: startup_or_storage_error (see configuration and filesystem permissions)"
+        );
         std::process::exit(1);
     }
 }
@@ -27,7 +33,11 @@ async fn run() -> Result<()> {
         anyhow::bail!("usage: proxy-signal /etc/proxy-signal/config.yaml [--once]");
     }
     let config = config::load(&args[1])?;
-    let sender = config.telegram.as_ref().map(telegram::Sender::new).transpose()?;
+    let sender = config
+        .telegram
+        .as_ref()
+        .map(telegram::Sender::new)
+        .transpose()?;
     let mut state = State::load(&config.state_file).context("state_load")?;
     let mut timer = tokio::time::interval(Duration::from_secs(config.interval_seconds));
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -92,7 +102,9 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
     let mut endpoints = Vec::new();
     for endpoint in &config.endpoints {
         let direct = tokio::time::timeout(timeout, probe::get_exit_ip(endpoint, None, timeout))
-            .await.ok().and_then(Result::ok);
+            .await
+            .ok()
+            .and_then(Result::ok);
         endpoints.push((endpoint.clone(), direct));
     }
     let mut results = Vec::new();
@@ -100,13 +112,22 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
     for entry in &config.sources {
         match tokio::time::timeout(timeout, source::load(entry, timeout)).await {
             Ok(Ok(document)) => {
-                results.push((format!("source/{}", entry.id()), Observation::new(Status::Ok, "source_loaded")));
+                results.push((
+                    format!("source/{}", entry.id()),
+                    Observation::new(Status::Ok, "source_loaded"),
+                ));
                 profiles.push((entry.clone(), document));
             }
             _ => {
                 // A source incident is distinct from a VPN failure.
-                results.push((format!("source/{}", entry.id()), Observation::new(Status::Failed, "source_unavailable")));
-                results.push((format!("profile/{}", entry.id()), Observation::new(Status::Unknown, "source_unavailable")));
+                results.push((
+                    format!("source/{}", entry.id()),
+                    Observation::new(Status::Failed, "source_unavailable"),
+                ));
+                results.push((
+                    format!("profile/{}", entry.id()),
+                    Observation::new(Status::Unknown, "source_unavailable"),
+                ));
             }
         }
     }
@@ -124,17 +145,26 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                 } else if targets.iter().all(|(_, ip)| ip.is_none()) {
                     Observation::new(Status::Unknown, "no_direct_baseline")
                 } else {
-                    match xray::check(document, &targets, entry.expected_exit_ips(), timeout).await {
+                    match xray::check(document, &targets, entry.expected_exit_ips(), timeout).await
+                    {
                         Ok(steps) => {
                             for ((endpoint, _), step) in targets.iter().zip(&steps) {
-                                println!("target=profile/{} endpoint={} proof={step:?}", entry.id(), endpoint.id);
+                                println!(
+                                    "target=profile/{} endpoint={} proof={step:?}",
+                                    entry.id(),
+                                    endpoint.id
+                                );
                             }
                             classify(&steps)
-                        },
+                        }
                         Err(_) => Observation::new(Status::Unknown, "xray_runtime_error"),
                     }
                 };
-                (format!("profile/{}", entry.id()), observation, start.elapsed())
+                (
+                    format!("profile/{}", entry.id()),
+                    observation,
+                    start.elapsed(),
+                )
             });
         }
         let mut completed = std::collections::HashSet::new();
@@ -176,10 +206,19 @@ mod tests {
     use super::*;
     #[test]
     fn partial_checks_are_not_ok() {
-        assert_eq!(classify(&[TargetResult::Passed, TargetResult::Failed]).status, Status::Degraded);
-        assert_eq!(classify(&[TargetResult::Passed, TargetResult::Unknown]).status, Status::Degraded);
+        assert_eq!(
+            classify(&[TargetResult::Passed, TargetResult::Failed]).status,
+            Status::Degraded
+        );
+        assert_eq!(
+            classify(&[TargetResult::Passed, TargetResult::Unknown]).status,
+            Status::Degraded
+        );
         assert_eq!(classify(&[TargetResult::Unknown]).status, Status::Unknown);
-        assert_eq!(classify(&[TargetResult::Failed, TargetResult::Unknown]).status, Status::Unknown);
+        assert_eq!(
+            classify(&[TargetResult::Failed, TargetResult::Unknown]).status,
+            Status::Unknown
+        );
         assert_eq!(classify(&[TargetResult::Failed]).status, Status::Failed);
         assert_eq!(classify(&[TargetResult::Passed]).status, Status::Ok);
     }

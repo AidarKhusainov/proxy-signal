@@ -1,6 +1,9 @@
 use crate::config::{self, Source};
 use anyhow::{bail, Context, Result};
-use reqwest::{header::{HeaderMap, HeaderName, HeaderValue}, Client};
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue},
+    Client,
+};
 use serde_json::Value;
 use std::{fs::File, io::Read, time::Duration};
 
@@ -10,7 +13,8 @@ pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
     let bytes = match source {
         Source::File { path, .. } => {
             let mut buf = Vec::new();
-            File::open(path).context("source_read")?
+            File::open(path)
+                .context("source_read")?
                 .take((MAX_PROFILE + 1) as u64)
                 .read_to_end(&mut buf)
                 .context("source_read")?;
@@ -20,11 +24,17 @@ pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
             let mut request_headers = HeaderMap::new();
             for (name, path) in headers {
                 let mut secret = Vec::new();
-                File::open(path).context("secret_read")?
-                    .take(2049).read_to_end(&mut secret).context("secret_read")?;
+                File::open(path)
+                    .context("secret_read")?
+                    .take(2049)
+                    .read_to_end(&mut secret)
+                    .context("secret_read")?;
                 let secret = std::str::from_utf8(&secret).context("secret_invalid")?;
                 let value = secret.trim_end_matches(|c| c == '\r' || c == '\n');
-                if value.is_empty() || value.len() > 2048 || value.bytes().any(|b| b == b'\r' || b == b'\n') {
+                if value.is_empty()
+                    || value.len() > 2048
+                    || value.bytes().any(|b| b == b'\r' || b == b'\n')
+                {
                     bail!("secret_invalid");
                 }
                 request_headers.insert(
@@ -39,7 +49,12 @@ pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(timeout)
                 .build()?;
-            let response = client.get(url).headers(request_headers).send().await.context("source_http")?;
+            let response = client
+                .get(url)
+                .headers(request_headers)
+                .send()
+                .await
+                .context("source_http")?;
             if !response.status().is_success() {
                 bail!("source_http_status");
             }

@@ -1,7 +1,13 @@
 use anyhow::{bail, Context, Result};
 use reqwest::Url;
 use serde::Deserialize;
-use std::{collections::HashSet, io::Read, net::{IpAddr, SocketAddr}, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet,
+    io::Read,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    time::Duration,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,9 +56,12 @@ impl Source {
     }
     pub fn expected_exit_ips(&self) -> &[IpAddr] {
         match self {
-            Self::File { expected_exit_ips, .. } | Self::Https { expected_exit_ips, .. } => {
-                expected_exit_ips
+            Self::File {
+                expected_exit_ips, ..
             }
+            | Self::Https {
+                expected_exit_ips, ..
+            } => expected_exit_ips,
         }
     }
 }
@@ -66,9 +75,11 @@ pub struct Telegram {
 
 pub fn load(path: &str) -> Result<Config> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path).context("read config")?
+    std::fs::File::open(path)
+        .context("read config")?
         .take(64 * 1024 + 1)
-        .read_to_end(&mut bytes).context("read config")?;
+        .read_to_end(&mut bytes)
+        .context("read config")?;
     if bytes.len() > 64 * 1024 {
         bail!("config too large");
     }
@@ -110,7 +121,12 @@ impl Config {
                         .context("invalid header name")?;
                 }
             }
-            if source.expected_exit_ips().len() > 16 || source.expected_exit_ips().iter().any(|ip| !is_public_ip(*ip)) {
+            if source.expected_exit_ips().len() > 16
+                || source
+                    .expected_exit_ips()
+                    .iter()
+                    .any(|ip| !is_public_ip(*ip))
+            {
                 bail!("too many expected exit IPs");
             }
         }
@@ -118,7 +134,10 @@ impl Config {
             bail!("state_file is required");
         }
         if let Some(tg) = &self.telegram {
-            if tg.chat_id.is_empty() || tg.chat_id.len() > 80 || !tg.chat_id.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+            if tg.chat_id.is_empty()
+                || tg.chat_id.len() > 80
+                || !tg.chat_id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+            {
                 bail!("invalid Telegram chat ID");
             }
         }
@@ -133,8 +152,12 @@ pub fn validate_https(s: &str) -> Result<Url> {
     }
     // Only operator-configured hostnames, never loopback/metadata IP literals.
     let host = url.host_str().context("missing hostname")?;
-    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local")
-        || host.starts_with('[') || host.parse::<IpAddr>().is_ok() {
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.starts_with('[')
+        || host.parse::<IpAddr>().is_ok()
+    {
         bail!("URL must use a public DNS hostname");
     }
     Ok(url)
@@ -146,8 +169,11 @@ pub async fn public_resolution(url: &str, budget: Duration) -> Result<(String, V
     let parsed = validate_https(url)?;
     let host = parsed.host_str().context("missing hostname")?.to_owned();
     let port = parsed.port_or_known_default().context("missing port")?;
-    let addresses: Vec<_> = tokio::time::timeout(budget, tokio::net::lookup_host((host.as_str(), port)))
-        .await.context("dns_timeout")??.collect();
+    let addresses: Vec<_> =
+        tokio::time::timeout(budget, tokio::net::lookup_host((host.as_str(), port)))
+            .await
+            .context("dns_timeout")??
+            .collect();
     if addresses.is_empty() || addresses.iter().any(|addr| !is_public_ip(addr.ip())) {
         bail!("non_public_http_destination");
     }
@@ -158,9 +184,15 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();
-            !(ip.is_private() || ip.is_loopback() || ip.is_link_local()
-                || ip.is_multicast() || ip.is_broadcast() || ip.is_unspecified()
-                || ip.is_documentation() || a == 0 || a >= 224
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ip.is_unspecified()
+                || ip.is_documentation()
+                || a == 0
+                || a >= 224
                 || a == 100 && (64..=127).contains(&b)
                 || a == 192 && b == 0 && c == 0
                 || a == 192 && b == 88 && c == 99
@@ -177,7 +209,9 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 #[cfg(test)]
