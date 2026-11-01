@@ -289,18 +289,63 @@ mod tests {
         let direct = case(ExpectedRoute::Direct, false);
         let routed = DIRECT_LOG.replace(" -> direct", " >> direct");
         assert_eq!(evaluate(&direct, true, &routed, "").status, Status::Ok);
-        assert_eq!(evaluate(&direct, true, &format!("{routed}\n{routed}"), "").status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, &routed.replace("example.org:443", "example.org:4430"), "").status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, &routed.replace("example.org:443", "example.org.evil:443"), "").status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, &routed.replace("proxy-signal-probe-in", "some-other-inbound"), "").status, Status::Unknown);
+        assert_eq!(
+            evaluate(&direct, true, &format!("{routed}\n{routed}"), "").status,
+            Status::Unknown
+        );
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                &routed.replace("example.org:443", "example.org:4430"),
+                ""
+            )
+            .status,
+            Status::Unknown
+        );
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                &routed.replace("example.org:443", "example.org.evil:443"),
+                ""
+            )
+            .status,
+            Status::Unknown
+        );
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                &routed.replace("proxy-signal-probe-in", "some-other-inbound"),
+                ""
+            )
+            .status,
+            Status::Unknown
+        );
     }
 
     #[test]
     fn unrelated_or_duplicate_dns_entries_never_prove_dns() {
         let direct = case(ExpectedRoute::Direct, true);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &DNS_LOG.replace("example.org.", "example.org.evil.")).status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &format!("{DNS_LOG}\n{DNS_LOG}")).status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, "not a DNS response").status, Status::Unknown);
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                DIRECT_LOG,
+                &DNS_LOG.replace("example.org.", "example.org.evil.")
+            )
+            .status,
+            Status::Unknown
+        );
+        assert_eq!(
+            evaluate(&direct, true, DIRECT_LOG, &format!("{DNS_LOG}\n{DNS_LOG}")).status,
+            Status::Unknown
+        );
+        assert_eq!(
+            evaluate(&direct, true, DIRECT_LOG, "not a DNS response").status,
+            Status::Unknown
+        );
     }
 
     #[test]
