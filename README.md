@@ -18,6 +18,33 @@ Separate `source/<id>` checks monitor JSON retrieval and parsing. Their `FAILED`
 
 The direct/proxied comparison calls an **operator-configured external HTTPS IP-echo endpoint**. Native direct requests resolve hostnames once, reject non-public DNS answers and pin the resolved addresses to limit DNS-rebinding/SSRF exposure; this cannot sandbox arbitrary operator-supplied Xray configurations. It does not need a paid service or proprietary backend, but an actual target is needed to measure external connectivity. If the direct path to the echo endpoint is blocked, result is `UNKNOWN`, not `OK`. Prefer at least two independent echo endpoints when available. Set `expected_exit_ips` for stronger expected-egress evidence; dynamic-exit nodes may need the list updated.
 
+## Optional DNS and routing scenarios (stage 3)
+
+Set `scenarios` under a source only when you need a domain-specific check. Normal node monitoring is unchanged. Each scenario has a stable `scenario/<source-id>/<scenario-id>` result and incident state, separate from `profile/<source-id>`.
+
+```yaml
+sources:
+  - id: test-profile
+    kind: file
+    path: /profiles/example.json
+    scenarios:
+      - id: direct-domain
+        url: https://example.org/
+        route: direct              # direct | proxy | block
+        outbound_tag: direct       # exact tag from original Xray outbounds
+        # Optional: use only when the full profile makes Xray resolve this domain.
+        # DNS answers change; replace these illustrative values with known test data.
+        # dns:
+        #   server: "UDP:1.1.1.1:53"  # exact upstream label in Xray DNS logs
+        #   expected_ips: [93.184.215.14]
+```
+
+A `direct` route requires a `freedom` outbound, `proxy` a non-`freedom`/non-`blackhole` outbound, and `block` a `blackhole` outbound. Static tag/protocol compatibility is only an eligibility check; it is **not** proof of routing. Xray's own access log must show the diagnostic inbound selecting the expected outbound for that exact hostname and HTTPS port. For direct/proxy, the TLS-verified HTTPS request must succeed; for block, it must fail. A working HTTPS request without a matching access record is `UNKNOWN`, never `OK`. A confirmed wrong outbound or a failed request on the correctly selected direct/proxy route is `FAILED`.
+
+If `dns` is specified, Xray must also produce diagnostic DNS records for the domain, exact upstream label, and expected A/AAAA answers. A mismatch is `FAILED`; missing or unparseable engine evidence is `UNKNOWN`. **The HTTP proxy does not force Xray's built-in DNS to resolve the domain.** Remote proxy resolution, system DNS, Xray cache, routing strategy and outbound DNS policy can mean no DNS evidence for this particular check. Such cases remain `UNKNOWN` and do not assert a resolver. DNS server names and answer sets are engine-reported evidence, not an independent packet capture of the DNS exchange. This check does not establish DNS-leak freedom or all upstream fallbacks.
+
+The original `dns`, `routing`, `outbounds`, and rule ordering remain untouched. Temporary loopback inbound and private, size-limited Xray access/error logs are created for the test process only. Logs are not forwarded or printed and are deleted after child cleanup. Scenarios use the same per-profile time budget as egress checks: when exhausted, remaining checks become `UNKNOWN`, not `OK`. Up to 8 scenarios per source / 64 total are allowed; scenario HTTPS host:port pairs must be unique within the source and must not overlap IP-echo endpoints to avoid misattributed log evidence. Use only operator-controlled test targets; no real secrets or production modifications are required. Neither access logs nor this stage prove a multi-hop cascade, balancing choice, physical DNS transport or CDN failover.
+
 ## Deploy
 
 ```sh
@@ -54,8 +81,8 @@ Offline tests cover full-profile retention, inbound-dependent unsupported paths,
 
 ## Additional coverage needed
 
-- **DNS:** capture the resolver actually used and prove expected A/AAAA answers and DNS routing; exit-IP alone is insufficient.
-- **Routing:** domain/IP cases with expected outbound selection and engine evidence (tag/counters); cover direct-vs-tunnel, rule ordering, and sniffing differences.
+- **DNS:** optional engine DNS-log upstream/A/AAAA matching is available when a profile actually triggers built-in DNS; independent packet-level confirmation and DNS-leak testing remain outside this block.
+- **Routing:** optional HTTPS domain cases confirm the selected outbound via Xray access logs; IP-specific routing, client sniffing and full rule-order coverage remain outside this block.
 - **leastPing/balancers:** identify selected candidates and observations, evaluate policy and switching, not just that one candidate works.
 - **Cascades:** verify each hop individually with independent evidence, not just ultimate exit IP.
 - **CDN:** dedicated TLS/SNI/WS/gRPC transport checks, reachability from monitoring locations, and expected CDN edge or fallback path.
