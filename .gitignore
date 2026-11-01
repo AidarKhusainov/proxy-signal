@@ -1,0 +1,37 @@
+# Rust build
+/target/
+**/*.rs.bk
+*.profraw
+*.profdata
+
+# Local/editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local runtime state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+/state/
+/data/
+/tmp/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+/secrets/
+*.secret
+*.key
+*.pem
+config.local.yaml
+config.local.yml
+credentials.json
+
+# Keep safe, synthetic fixtures in version control; do not commit real subscriptions.
