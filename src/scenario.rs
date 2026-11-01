@@ -45,8 +45,8 @@ pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
     }
 }
 
-/// Requires an access event for the exact diagnostic inbound and requested
-/// destination. HTTPS success by itself is never routing evidence.
+/// An access event for this exact inbound and destination is required.
+/// Neither a static routing rule nor an HTTPS response proves outbound selection.
 pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Observation {
     let Ok(url) = reqwest::Url::parse(&case.url) else {
         return Observation::new(Status::Unsupported, "scenario_invalid_url");
@@ -54,25 +54,34 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
     let Some(host) = url.host_str() else {
         return Observation::new(Status::Unsupported, "scenario_invalid_url");
     };
-    let needle = format!(
-        "accepted tcp:{}:{} [proxy-signal-probe-in -> ",
-        host,
-        url.port_or_known_default().unwrap_or(443)
-    );
-    let mut observed: Option<&str> = None;
+    let destination = format!("{}:{}", host, url.port_or_known_default().unwrap_or(443));
+    let mut chosen: Option<&str> = None;
     for line in access.lines() {
-        let Some((_, remainder)) = line.split_once(&needle) else {
+        let Some((_, entry)) = line.split_once(" accepted tcp:") else {
             continue;
         };
-        let Some((tag, _)) = remainder.split_once(']') else {
+        let Some(entry) = entry.strip_prefix(&destination) else {
             continue;
         };
-        if tag.is_empty() || observed.is_some_and(|prior| prior != tag) {
+        let Some(entry) = entry.strip_prefix(" [proxy-signal-probe-in") else {
+            continue;
+        };
+        // Xray emits both "->" and ">>" depending on the routing path.
+        let Some(entry) = entry
+            .strip_prefix(" -> ")
+            .or_else(|| entry.strip_prefix(" >> "))
+        else {
+            continue;
+        };
+        let Some((tag, _)) = entry.split_once(']') else {
+            continue;
+        };
+        if tag.is_empty() || chosen.is_some() {
             return Observation::new(Status::Unknown, "ambiguous_route_evidence");
         }
-        observed = Some(tag);
+        chosen = Some(tag);
     }
-    let Some(actual) = observed else {
+    let Some(actual) = chosen else {
         return Observation::new(Status::Unknown, "route_not_observed");
     };
     if actual != case.outbound_tag {
@@ -85,64 +94,62 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
     } else if !http_ok {
         return Observation::new(Status::Failed, "routed_https_failed");
     }
-    if let Some(dns) = &case.dns {
-        let mut observed_families = HashSet::new();
-        let expected: HashSet<IpAddr> = dns.expected_ips.iter().copied().collect();
-        for line in error.lines() {
-            let Some((_, entry)) = line.split_once("app/dns: ") else {
-                continue;
-            };
-            let Some((server, response)) = entry.split_once(" got answer: ") else {
-                continue;
-            };
-            let Some(answer) = response.strip_prefix(host) else {
-                continue;
-            };
-            let answer = answer.strip_prefix('.').unwrap_or(answer);
-            let family = if answer.starts_with(" TypeA -> [") {
-                4
-            } else if answer.starts_with(" TypeAAAA -> [") {
-                6
-            } else {
-                continue;
-            };
-            let expected_family: HashSet<_> = expected
-                .iter()
-                .copied()
-                .filter(|ip| (family == 4) == ip.is_ipv4())
-                .collect();
-            if expected_family.is_empty() {
-                continue;
-            }
-            observed_families.insert(family);
-            if server != dns.server {
-                return Observation::new(Status::Failed, "dns_server_mismatch");
-            }
-            let Some((_, list)) = answer.split_once(" -> [") else {
-                return Observation::new(Status::Unknown, "dns_log_unparseable");
-            };
-            let Some((list, _)) = list.split_once(']') else {
-                return Observation::new(Status::Unknown, "dns_log_unparseable");
-            };
-            let parsed: Result<HashSet<IpAddr>, _> =
-                list.split_whitespace().map(str::parse).collect();
-            let Ok(actual_ips) = parsed else {
-                return Observation::new(Status::Unknown, "dns_log_unparseable");
-            };
-            if actual_ips != expected_family {
-                return Observation::new(Status::Failed, "dns_answer_mismatch");
-            }
-        }
-        if expected
+    let Some(dns) = &case.dns else {
+        return Observation::new(Status::Ok, "routing_verified");
+    };
+    let expected: HashSet<IpAddr> = dns.expected_ips.iter().copied().collect();
+    let mut families = HashSet::new();
+    for line in error.lines() {
+        let Some((_, entry)) = line.split_once(" app/dns: ") else {
+            continue;
+        };
+        let Some((server, answer)) = entry.split_once(" got answer: ") else {
+            continue;
+        };
+        // Do not match subdomains, partial hostnames or unrelated DNS lookups.
+        let Some(answer) = answer.strip_prefix(host) else {
+            continue;
+        };
+        let (family, answer) = if let Some(ips) = answer.strip_prefix(". TypeA -> [") {
+            (4, ips)
+        } else if let Some(ips) = answer.strip_prefix(". TypeAAAA -> [") {
+            (6, ips)
+        } else {
+            continue;
+        };
+        let expected_family: HashSet<IpAddr> = expected
             .iter()
-            .any(|ip| !observed_families.contains(&if ip.is_ipv4() { 4 } else { 6 }))
-        {
-            return Observation::new(Status::Unknown, "dns_not_observed");
+            .copied()
+            .filter(|ip| (family == 4) == ip.is_ipv4())
+            .collect();
+        if expected_family.is_empty() {
+            // An unrequested family must not prove this scenario.
+            continue;
         }
-        Observation::new(Status::Ok, "routing_dns_verified")
-    } else {
-        Observation::new(Status::Ok, "routing_verified")
+        if server != dns.server {
+            return Observation::new(Status::Failed, "dns_server_mismatch");
+        }
+        let Some((list, _)) = answer.split_once(']') else {
+            return Observation::new(Status::Unknown, "dns_log_unparseable");
+        };
+        let parsed: Result<HashSet<IpAddr>, _> = list.split_whitespace().map(str::parse).collect();
+        let Ok(actual_ips) = parsed else {
+            return Observation::new(Status::Unknown, "dns_log_unparseable");
+        };
+        if actual_ips != expected_family {
+            return Observation::new(Status::Failed, "dns_answer_mismatch");
+        }
+        if !families.insert(family) {
+            return Observation::new(Status::Unknown, "ambiguous_dns_evidence");
+        }
     }
+    if expected
+        .iter()
+        .any(|ip| !families.contains(&if ip.is_ipv4() { 4 } else { 6 }))
+    {
+        return Observation::new(Status::Unknown, "dns_not_observed");
+    }
+    Observation::new(Status::Ok, "routing_dns_verified")
 }
 
 #[cfg(test)]
@@ -275,6 +282,25 @@ mod tests {
             .status,
             Status::Failed
         );
+    }
+
+    #[test]
+    fn real_xray_log_variants_and_ambiguous_entries() {
+        let direct = case(ExpectedRoute::Direct, false);
+        let routed = DIRECT_LOG.replace(" -> direct", " >> direct");
+        assert_eq!(evaluate(&direct, true, &routed, "").status, Status::Ok);
+        assert_eq!(evaluate(&direct, true, &format!("{routed}\n{routed}"), "").status, Status::Unknown);
+        assert_eq!(evaluate(&direct, true, &routed.replace("example.org:443", "example.org:4430"), "").status, Status::Unknown);
+        assert_eq!(evaluate(&direct, true, &routed.replace("example.org:443", "example.org.evil:443"), "").status, Status::Unknown);
+        assert_eq!(evaluate(&direct, true, &routed.replace("proxy-signal-probe-in", "some-other-inbound"), "").status, Status::Unknown);
+    }
+
+    #[test]
+    fn unrelated_or_duplicate_dns_entries_never_prove_dns() {
+        let direct = case(ExpectedRoute::Direct, true);
+        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &DNS_LOG.replace("example.org.", "example.org.evil.")).status, Status::Unknown);
+        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &format!("{DNS_LOG}\n{DNS_LOG}")).status, Status::Unknown);
+        assert_eq!(evaluate(&direct, true, DIRECT_LOG, "not a DNS response").status, Status::Unknown);
     }
 
     #[test]
