@@ -81,10 +81,14 @@ impl Default for State {
 
 impl State {
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        if fs::metadata(path)?.len() > 128 * 1024 {
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(error) => return Err(error).context("state_metadata"),
+        };
+        if metadata.len() > 128 * 1024 {
             anyhow::bail!("state_oversize");
         }
         let data = fs::read(path).context("state_read")?;

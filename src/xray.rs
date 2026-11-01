@@ -191,9 +191,10 @@ impl ManagedChild {
 
     async fn stop(&mut self) {
         self.kill_group();
-        self.finished = tokio::time::timeout(Duration::from_secs(2), self.child.wait())
-            .await
-            .is_ok();
+        self.finished = matches!(
+            tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await,
+            Ok(Ok(_))
+        );
     }
 }
 

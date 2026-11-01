@@ -5,6 +5,10 @@ on:
       - 'src/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'compose.yaml'
+      - 'config.example.yaml'
+      - 'scripts/smoke-docker.sh'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
 permissions:
@@ -22,13 +26,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # Temporary one-time lockfile capture; removed after Cargo.lock is committed.
-      - name: Resolve dependency lockfile
-        run: |
-          cargo generate-lockfile
-          printf '\nPROXYSIGNAL_LOCK_BEGIN\n'
-          base64 -w0 Cargo.lock
-          printf '\nPROXYSIGNAL_LOCK_END\n'
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-targets
+      - name: Docker Compose and Xray smoke
+        run: |
+          mkdir -p profiles secrets
+          cp config.example.yaml config.yaml
+          docker compose config --quiet
+          sh scripts/smoke-docker.sh

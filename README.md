@@ -41,12 +41,14 @@ Incidents require **two matching consecutive** `FAILED` or `DEGRADED` outcomes p
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
 # In an environment with Docker and a test VPN profile:
 docker compose build
 docker compose run --rm proxy-signal /etc/proxy-signal/config.yaml --once
 ```
+
+The Docker build uses the checked-in `Cargo.lock` with `--locked`, digest-pinned Rust, Debian and official Xray base images, and a pinned trust store. This fixes dependency and base-image resolution for repeatable builds; it does not promise bit-identical binaries across different host platforms or environments.
 
 Offline tests cover full-profile retention, inbound-dependent unsupported paths, direct-egress false positives, multi-endpoint aggregation, incident confirmation and persistence. Run `sh scripts/smoke-docker.sh` on a host with Docker and outbound HTTPS to validate image construction, supervised Xray startup, full-profile execution and a **deliberately failed** synthetic VLESS connection without production credentials. It must report `FAILED`, never `OK`. A real positive VPN check with a non-production profile and a **different externally observable exit IP** is still required before production use.
 
