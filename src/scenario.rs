@@ -9,17 +9,26 @@ use std::{collections::HashSet, net::IpAddr};
 /// with the expected protocol class; selection is verified separately from Xray logs.
 pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
     let Some(outbounds) = profile.get("outbounds").and_then(Value::as_array) else {
-        return Some(Observation::new(Status::Unsupported, "scenario_missing_outbounds"));
+        return Some(Observation::new(
+            Status::Unsupported,
+            "scenario_missing_outbounds",
+        ));
     };
     let selected: Vec<_> = outbounds
         .iter()
         .filter(|o| o.get("tag").and_then(Value::as_str) == Some(case.outbound_tag.as_str()))
         .collect();
     if selected.len() != 1 {
-        return Some(Observation::new(Status::Unsupported, "scenario_outbound_not_unique"));
+        return Some(Observation::new(
+            Status::Unsupported,
+            "scenario_outbound_not_unique",
+        ));
     }
     let Some(protocol) = selected[0].get("protocol").and_then(Value::as_str) else {
-        return Some(Observation::new(Status::Unsupported, "scenario_missing_protocol"));
+        return Some(Observation::new(
+            Status::Unsupported,
+            "scenario_missing_protocol",
+        ));
     };
     let compatible = match case.route {
         ExpectedRoute::Direct => protocol == "freedom",
@@ -29,7 +38,10 @@ pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
     if compatible {
         None
     } else {
-        Some(Observation::new(Status::Unsupported, "scenario_protocol_mismatch"))
+        Some(Observation::new(
+            Status::Unsupported,
+            "scenario_protocol_mismatch",
+        ))
     }
 }
 
@@ -121,7 +133,10 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
                 return Observation::new(Status::Failed, "dns_answer_mismatch");
             }
         }
-        if expected.iter().any(|ip| !observed_families.contains(&if ip.is_ipv4() { 4 } else { 6 })) {
+        if expected
+            .iter()
+            .any(|ip| !observed_families.contains(&if ip.is_ipv4() { 4 } else { 6 }))
+        {
             return Observation::new(Status::Unknown, "dns_not_observed");
         }
         Observation::new(Status::Ok, "routing_dns_verified")
@@ -145,7 +160,8 @@ mod tests {
                 ExpectedRoute::Direct => "direct",
                 ExpectedRoute::Proxy => "vpn",
                 ExpectedRoute::Block => "blocked",
-            }.into(),
+            }
+            .into(),
             dns: dns.then(|| DnsExpectation {
                 server: "UDP:1.1.1.1:53".into(),
                 expected_ips: vec!["93.184.215.14".parse().unwrap()],
@@ -161,36 +177,123 @@ mod tests {
     #[test]
     fn routing_proof_requires_exact_access_tag() {
         let direct = case(ExpectedRoute::Direct, false);
-        assert!(static_check(&json!({"outbounds": [{"tag":"direct","protocol":"freedom"}]}), &direct).is_none());
+        assert!(static_check(
+            &json!({"outbounds": [{"tag":"direct","protocol":"freedom"}]}),
+            &direct
+        )
+        .is_none());
         assert_eq!(evaluate(&direct, true, DIRECT_LOG, "").status, Status::Ok);
         assert_eq!(evaluate(&direct, true, "", "").status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, &DIRECT_LOG.replace("-> direct", "-> vpn"), "").status, Status::Failed);
-        assert_eq!(evaluate(&direct, false, DIRECT_LOG, "").status, Status::Failed);
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                &DIRECT_LOG.replace("-> direct", "-> vpn"),
+                ""
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            evaluate(&direct, false, DIRECT_LOG, "").status,
+            Status::Failed
+        );
     }
 
     #[test]
     fn blocked_route_requires_blackhole_and_no_https() {
         let block = case(ExpectedRoute::Block, false);
-        assert_eq!(evaluate(&block, false, &DIRECT_LOG.replace("-> direct", "-> blocked"), "").status, Status::Ok);
-        assert_eq!(evaluate(&block, true, &DIRECT_LOG.replace("-> direct", "-> blocked"), "").status, Status::Failed);
-        assert_eq!(static_check(&json!({"outbounds": [{"tag":"blocked","protocol":"freedom"}]}), &block).unwrap().status, Status::Unsupported);
+        assert_eq!(
+            evaluate(
+                &block,
+                false,
+                &DIRECT_LOG.replace("-> direct", "-> blocked"),
+                ""
+            )
+            .status,
+            Status::Ok
+        );
+        assert_eq!(
+            evaluate(
+                &block,
+                true,
+                &DIRECT_LOG.replace("-> direct", "-> blocked"),
+                ""
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            static_check(
+                &json!({"outbounds": [{"tag":"blocked","protocol":"freedom"}]}),
+                &block
+            )
+            .unwrap()
+            .status,
+            Status::Unsupported
+        );
     }
 
     #[test]
     fn dns_requires_engine_answer_and_expected_server() {
         let direct = case(ExpectedRoute::Direct, true);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, DNS_LOG).status, Status::Ok);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, "").status, Status::Unknown);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &DNS_LOG.replace("1.1.1.1", "8.8.8.8")).status, Status::Failed);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &DNS_LOG.replace("93.184.215.14", "93.184.215.15")).status, Status::Failed);
-        assert_eq!(evaluate(&direct, true, DIRECT_LOG, &DNS_LOG.replace("93.184.215.14", "")).status, Status::Failed);
+        assert_eq!(
+            evaluate(&direct, true, DIRECT_LOG, DNS_LOG).status,
+            Status::Ok
+        );
+        assert_eq!(
+            evaluate(&direct, true, DIRECT_LOG, "").status,
+            Status::Unknown
+        );
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                DIRECT_LOG,
+                &DNS_LOG.replace("1.1.1.1", "8.8.8.8")
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                DIRECT_LOG,
+                &DNS_LOG.replace("93.184.215.14", "93.184.215.15")
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            evaluate(
+                &direct,
+                true,
+                DIRECT_LOG,
+                &DNS_LOG.replace("93.184.215.14", "")
+            )
+            .status,
+            Status::Failed
+        );
     }
 
     #[test]
     fn missing_or_duplicate_outbound_is_not_accepted() {
         let proxy = case(ExpectedRoute::Proxy, false);
-        assert!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"vless"}]}), &proxy).is_none());
-        assert_eq!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"freedom"}]}), &proxy).unwrap().status, Status::Unsupported);
+        assert!(static_check(
+            &json!({"outbounds": [{"tag":"vpn","protocol":"vless"}]}),
+            &proxy
+        )
+        .is_none());
+        assert_eq!(
+            static_check(
+                &json!({"outbounds": [{"tag":"vpn","protocol":"freedom"}]}),
+                &proxy
+            )
+            .unwrap()
+            .status,
+            Status::Unsupported
+        );
         assert_eq!(static_check(&json!({"outbounds": [{"tag":"vpn","protocol":"vless"},{"tag":"vpn","protocol":"vless"}]}), &proxy).unwrap().status, Status::Unsupported);
     }
 }
