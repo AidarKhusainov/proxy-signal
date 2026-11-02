@@ -84,7 +84,12 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn record_cycle(state: &mut State, rows: &[ResultRow], notifications: bool, max_age_seconds: u64) -> bool {
+fn record_cycle(
+    state: &mut State,
+    rows: &[ResultRow],
+    notifications: bool,
+    max_age_seconds: u64,
+) -> bool {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
@@ -92,7 +97,12 @@ fn record_cycle(state: &mut State, rows: &[ResultRow], notifications: bool, max_
     for (key, observation) in rows {
         let observation = fresh_observation(*observation, now, max_age_seconds);
         healthy &= observation.status == Status::Ok;
-        println!("ts={} target={key} status={} evidence={}", observation.observed_at, observation.status.as_str(), observation.code);
+        println!(
+            "ts={} target={key} status={} evidence={}",
+            observation.observed_at,
+            observation.status.as_str(),
+            observation.code
+        );
         state.observe(key, observation, notifications);
     }
     // Refresh comparable records first: expiring a previous cycle here before
@@ -615,7 +625,10 @@ mod tests {
             assert_eq!(stale.observed_at, 100);
         }
         observation.status = Status::Failed;
-        assert_eq!(fresh_observation(observation, 136, 35).status, Status::Unknown);
+        assert_eq!(
+            fresh_observation(observation, 136, 35).status,
+            Status::Unknown
+        );
     }
 
     #[test]
@@ -624,18 +637,27 @@ mod tests {
         primary.observed_at = 100;
         let mut aggregate = Observation::new(Status::Ok, "failover_verified");
         aggregate.observed_at = 170;
-        let mut rows = vec![("primary".to_string(), primary), ("overall".to_string(), aggregate)];
+        let mut rows = vec![
+            ("primary".to_string(), primary),
+            ("overall".to_string(), aggregate),
+        ];
         stamp_cycle(&mut rows, 105);
         assert_eq!(rows[0].1.observed_at, 100);
         assert_eq!(rows[1].1.observed_at, 105);
         for (_, observation) in rows {
-            assert_eq!(fresh_observation(observation, 196, 90).status, Status::Unknown);
+            assert_eq!(
+                fresh_observation(observation, 196, 90).status,
+                Status::Unknown
+            );
         }
     }
 
     #[test]
     fn fresh_slow_cycles_still_confirm_consecutive_failures() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let mut state = State::default();
         let mut first = Observation::new(Status::Failed, "all_egress_probes_failed");
         // The first cycle began 30 seconds before the second; both take 10s.
@@ -643,7 +665,12 @@ mod tests {
         state.observe("profile/lab", first, true);
         let mut second = first;
         second.observed_at = now - 10;
-        assert!(!record_cycle(&mut state, &[("profile/lab".to_string(), second)], true, 35));
+        assert!(!record_cycle(
+            &mut state,
+            &[("profile/lab".to_string(), second)],
+            true,
+            35
+        ));
         assert_eq!(state.pending.len(), 1);
         assert_eq!(state.pending[0].status, Status::Failed);
     }

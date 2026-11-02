@@ -706,7 +706,10 @@ mod tests {
     fn process_is_running(pid: u32) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
-            .and_then(|stat| stat.rsplit_once(") ").map(|(_, tail)| tail.starts_with('Z')))
+            .and_then(|stat| {
+                stat.rsplit_once(") ")
+                    .map(|(_, tail)| tail.starts_with('Z'))
+            })
             .is_some_and(|zombie| !zombie)
     }
 
@@ -790,7 +793,10 @@ mod tests {
         sleep(Duration::from_millis(20)).await;
         let still_running = unrelated.child.try_wait().unwrap().is_none();
         unrelated.stop().await;
-        assert!(still_running, "a completed supervisor signalled another group");
+        assert!(
+            still_running,
+            "a completed supervisor signalled another group"
+        );
     }
 
     #[cfg(unix)]

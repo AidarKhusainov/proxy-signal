@@ -116,14 +116,21 @@ mod tests {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "local Telegram request timed out");
+                            assert!(
+                                Instant::now() < deadline,
+                                "local Telegram request timed out"
+                            );
                             thread::sleep(Duration::from_millis(5));
                         }
                         Err(error) => panic!("local Telegram accept failed: {error}"),
                     }
                 };
-                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let mut request = Vec::new();
                 let mut body_bounds = None;
                 loop {
@@ -205,12 +212,19 @@ mod tests {
             assert_eq!(restarted.pending.len(), 2 - failing_index);
             assert_eq!(
                 restarted.pending[0].status,
-                if failing_index == 0 { Status::Failed } else { Status::Ok }
+                if failing_index == 0 {
+                    Status::Failed
+                } else {
+                    Status::Ok
+                }
             );
             sender.deliver_pending(&mut restarted, &path).await.unwrap();
             let mut acknowledged = State::load(&path).unwrap();
             assert!(acknowledged.pending.is_empty());
-            sender.deliver_pending(&mut acknowledged, &path).await.unwrap();
+            sender
+                .deliver_pending(&mut acknowledged, &path)
+                .await
+                .unwrap();
             let requests = server.join().unwrap();
             assert_eq!(requests.len(), 3);
             let expected = if failing_index == 0 {
@@ -233,7 +247,10 @@ mod tests {
             (200, r#"{"ok":false,"description":"rejected"}"#.to_string()),
             (200, r#"{"ok":"true"}"#.to_string()),
             (200, "not-json".to_string()),
-            (429, r#"{"ok":false,"parameters":{"retry_after":1}}"#.to_string()),
+            (
+                429,
+                r#"{"ok":false,"parameters":{"retry_after":1}}"#.to_string(),
+            ),
             (200, " ".repeat(32 * 1024 + 1)),
         ] {
             let dir = tempfile::tempdir().unwrap();
@@ -292,7 +309,10 @@ mod tests {
         state.persist(&path).unwrap();
         let (sender, server) = local_sender(vec![(200, r#"{"ok":true}"#.to_string())]);
         let missing_parent = dir.path().join("missing/state.json");
-        assert!(sender.deliver_pending(&mut state, &missing_parent).await.is_err());
+        assert!(sender
+            .deliver_pending(&mut state, &missing_parent)
+            .await
+            .is_err());
         assert_eq!(server.join().unwrap().len(), 1);
         // An accepted send whose acknowledgement could not be stored may be
         // retried after restart: Telegram offers no idempotency key here.
@@ -331,7 +351,9 @@ mod tests {
         .await;
         stalled.abort();
         let _ = stalled.await;
-        result.expect("Telegram request ignored its client timeout").unwrap();
+        result
+            .expect("Telegram request ignored its client timeout")
+            .unwrap();
         let restarted = State::load(&path).unwrap();
         assert_eq!(restarted.pending.len(), 2);
         assert_eq!(restarted.pending[0].status, Status::Failed);

@@ -252,9 +252,7 @@ impl State {
     }
 
     pub fn persist(&self, path: &Path) -> Result<()> {
-        if self.version != 1
-            || self.pending.len() > MAX_PENDING
-            || self.records.len() > MAX_RECORDS
+        if self.version != 1 || self.pending.len() > MAX_PENDING || self.records.len() > MAX_RECORDS
         {
             anyhow::bail!("state_version_or_limits");
         }
@@ -647,11 +645,7 @@ mod tests {
         );
         assert_eq!(state.pending.len(), 1);
         assert_eq!(state.records[key].active, Some(Status::Failed));
-        state.observe(
-            key,
-            Observation::new(Status::Ok, "cascade_verified"),
-            true,
-        );
+        state.observe(key, Observation::new(Status::Ok, "cascade_verified"), true);
         assert_eq!(state.pending.len(), 2);
         assert_eq!(state.pending[1].status, Status::Ok);
         assert_eq!(state.records[key].active, None);
@@ -684,7 +678,10 @@ mod tests {
         }
         state.persist(&path).unwrap();
         let mut restored = State::load(&path).unwrap();
-        assert_eq!(restored.records["profile/source"].active, Some(Status::Failed));
+        assert_eq!(
+            restored.records["profile/source"].active,
+            Some(Status::Failed)
+        );
         assert_eq!(restored.pending.len(), 1);
         assert_eq!(restored.pending[0].key, "source/source");
         restored.observe(
@@ -747,7 +744,11 @@ mod tests {
             }
         }
         for key in &keys {
-            state.observe(key, Observation::new(Status::Unknown, "not_observed"), false);
+            state.observe(
+                key,
+                Observation::new(Status::Unknown, "not_observed"),
+                false,
+            );
         }
         state.persist(&path).unwrap();
         let restored = State::load(&path).unwrap();
@@ -808,7 +809,10 @@ mod tests {
             }
             restored.persist(&path).unwrap();
             let checkpoint = State::load(&path).unwrap();
-            assert_eq!(checkpoint.records["profile/a"].last_status, Some(Status::Unknown));
+            assert_eq!(
+                checkpoint.records["profile/a"].last_status,
+                Some(Status::Unknown)
+            );
         }
     }
 
@@ -833,7 +837,10 @@ mod tests {
             fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
             let mut state = State::load(&path).unwrap();
             state.expire_stale_at(200, 60);
-            assert_eq!(state.records["profile/a"].last_status, Some(Status::Unknown));
+            assert_eq!(
+                state.records["profile/a"].last_status,
+                Some(Status::Unknown)
+            );
             assert_eq!(state.records["profile/a"].last_code, "observation_stale");
             assert!(state.pending.is_empty());
         }
@@ -874,8 +881,14 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
         let mut state = State::load(&path).unwrap();
         state.expire_stale_at(200, 60);
-        assert_eq!(state.records["cascade/source/chain"].active, Some(Status::Failed));
-        assert_eq!(state.records["cascade/source/chain"].last_status, Some(Status::Unknown));
+        assert_eq!(
+            state.records["cascade/source/chain"].active,
+            Some(Status::Failed)
+        );
+        assert_eq!(
+            state.records["cascade/source/chain"].last_status,
+            Some(Status::Unknown)
+        );
         state.observe(
             "cascade/source/chain",
             Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"),
@@ -937,9 +950,15 @@ mod tests {
         let restored = State::load(&path).unwrap();
         assert_eq!(restored.pending.len(), 688);
         for index in 0..344 {
-            assert_eq!(restored.pending[index].key, format!("profile/check-{index}"));
+            assert_eq!(
+                restored.pending[index].key,
+                format!("profile/check-{index}")
+            );
             assert_eq!(restored.pending[index].status, Status::Failed);
-            assert_eq!(restored.pending[344 + index].key, format!("profile/check-{index}"));
+            assert_eq!(
+                restored.pending[344 + index].key,
+                format!("profile/check-{index}")
+            );
             assert_eq!(restored.pending[344 + index].status, Status::Ok);
         }
     }
@@ -952,7 +971,11 @@ mod tests {
         // This outage was already delivered; its later recovery legitimately
         // has no preceding failure in the pending queue.
         for _ in 0..2 {
-            state.observe("profile/delivered", Observation::new(Status::Failed, "tls"), true);
+            state.observe(
+                "profile/delivered",
+                Observation::new(Status::Failed, "tls"),
+                true,
+            );
         }
         state.pending.clear();
         for _ in 0..MAX_PENDING / 4 {
@@ -971,27 +994,42 @@ mod tests {
         );
         state.persist(&path).unwrap();
         let restored = State::load(&path).unwrap();
-        let actual: Vec<_> = restored.pending.iter().map(|n| (n.key.as_str(), n.status)).collect();
-        assert_eq!(actual, vec![
-            ("profile/a", Status::Failed),
-            ("profile/a", Status::Ok),
-            ("profile/b", Status::Failed),
-            ("profile/b", Status::Ok),
-            ("profile/delivered", Status::Ok),
-        ]);
+        let actual: Vec<_> = restored
+            .pending
+            .iter()
+            .map(|n| (n.key.as_str(), n.status))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                ("profile/a", Status::Failed),
+                ("profile/a", Status::Ok),
+                ("profile/b", Status::Failed),
+                ("profile/b", Status::Ok),
+                ("profile/delivered", Status::Ok),
+            ]
+        );
     }
 
     #[test]
     fn saturation_keeps_a_pending_outage_with_its_incoming_recovery() {
         let mut state = State::default();
         for index in 0..MAX_PENDING {
-            let status = if index % 2 == 0 { Status::Failed } else { Status::Degraded };
+            let status = if index % 2 == 0 {
+                Status::Failed
+            } else {
+                Status::Degraded
+            };
             for _ in 0..2 {
                 state.observe("profile/a", Observation::new(status, "tls"), true);
             }
         }
         assert_eq!(state.pending.len(), MAX_PENDING);
-        state.observe("profile/a", Observation::new(Status::Ok, "egress_verified"), true);
+        state.observe(
+            "profile/a",
+            Observation::new(Status::Ok, "egress_verified"),
+            true,
+        );
         assert_eq!(state.pending.len(), 2);
         assert_eq!(state.pending[0].status, Status::Degraded);
         assert_eq!(state.pending[1].status, Status::Ok);
