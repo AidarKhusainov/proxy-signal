@@ -27,6 +27,9 @@ fn missing(config: Observation) -> Checks {
 /// Failures can only be induced on a fresh, unoccupied loopback SOCKS port.
 /// Production endpoints, external sockets and routing configurations are never modified.
 pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
+    if xray::prepare(profile.clone(), 20999).is_err() {
+        return Observation::new(Status::Unsupported, "failover_profile_incompatible");
+    }
     let Some(primary) = profile.get("outbounds").and_then(Value::as_array)
         .and_then(|items| items.iter().find(|o| o.get("tag").and_then(Value::as_str) == Some(case.primary_tag.as_str()))) else {
         return Observation::new(Status::Unsupported, "failover_primary_missing");
@@ -326,6 +329,20 @@ mod tests {
         assert_eq!(overall(ok,ok,ok,ok,u,true).status,Status::Unknown);
         assert_eq!(overall(ok,ok,ok,ok,ok,true).status,Status::Ok);
     }
+    #[tokio::test]
+    async fn occupied_control_port_cannot_be_modified() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let occupied = listener.local_addr().unwrap().port();
+        let mut c = case();
+        c.control_port = occupied;
+        let mut p = profile();
+        p["outbounds"][0]["settings"]["servers"][0]["port"] = json!(occupied);
+        let result = check(p, &c, Duration::from_millis(10)).await;
+        assert_eq!(result.config.status, Status::Ok);
+        assert_eq!(result.overall.status, Status::Unknown);
+        assert!(listener.local_addr().is_ok());
+    }
+
     #[test]
     fn phase_evidence_is_not_reused() {
         let dir=TempDir::new().unwrap();
