@@ -420,10 +420,8 @@ mod tests {
     #[test]
     fn failover_recovery_retires_only_proven_route_failures() {
         let key = "failover/source/lab";
-        let recovery = Observation::new(
-            Status::Unknown,
-            "failover_routes_healthy_switch_unverified",
-        );
+        let recovery =
+            Observation::new(Status::Unknown, "failover_routes_healthy_switch_unverified");
         for code in ["failover_primary_failed", "failover_backups_failed"] {
             let mut state = State::default();
             for _ in 0..2 {
