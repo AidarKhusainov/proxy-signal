@@ -1,5 +1,6 @@
 mod balancer;
 mod cascade;
+mod cdn;
 mod config;
 mod incident;
 mod probe;
@@ -173,6 +174,22 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             let targets = endpoints.clone();
             tasks.spawn(async move {
                 let start = Instant::now();
+                // Native CDN reachability starts independently of Xray startup.
+                let native_cdn_task = tokio::spawn({
+                    let cases = entry.cdn().to_vec();
+                    async move {
+                        let mut jobs = JoinSet::new();
+                        let mut results: Vec<Option<cdn::EndpointChecks>> =
+                            (0..cases.len()).map(|_| None).collect();
+                        for (index, case) in cases.into_iter().enumerate() {
+                            jobs.spawn(async move { (index, cdn::endpoint(&case, timeout).await) });
+                        }
+                        while let Some(Ok((index, result))) = jobs.join_next().await {
+                            results[index] = Some(result);
+                        }
+                        results
+                    }
+                });
                 let scenario_rows = |status: Status, code: &'static str| {
                     entry
                         .scenarios()
@@ -249,7 +266,25 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         })
                         .collect::<Vec<_>>()
                 };
-                let (observation, checks, balance_checks, cascade_checks) = if xray::prepare(document.clone(), 9876)
+                let unavailable_cdn = |status: Status, code: &'static str| {
+                    entry
+                        .cdn()
+                        .iter()
+                        .map(|case| {
+                            let config = if status == Status::Unsupported {
+                                Observation::new(status, code)
+                            } else {
+                                cdn::inspect(&document, case)
+                            };
+                            xray::CdnChecks {
+                                config,
+                                tunnel: Observation::new(status, code),
+                                route: Observation::new(status, code),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let (observation, checks, balance_checks, cascade_checks, cdn_xray_checks) = if xray::prepare(document.clone(), 9876)
                     .is_err()
                 {
                     (
@@ -257,14 +292,17 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         scenario_rows(Status::Unsupported, "profile_incompatible"),
                         unavailable_balancers(Status::Unsupported, "profile_incompatible"),
                         unavailable_cascades(Status::Unsupported, "profile_incompatible"),
+                        unavailable_cdn(Status::Unsupported, "profile_incompatible"),
                     )
                 } else if targets.iter().all(|(_, ip)| ip.is_none())
                     && entry.scenarios().is_empty()
                     && entry.balancers().is_empty()
                     && entry.cascades().is_empty()
+                    && entry.cdn().is_empty()
                 {
                     (
                         Observation::new(Status::Unknown, "no_direct_baseline"),
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -277,6 +315,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         entry.scenarios(),
                         entry.balancers(),
                         entry.cascades(),
+                        entry.cdn(),
                         timeout,
                     )
                     .await
@@ -345,16 +384,42 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                             } else {
                                 classify(&steps.egress)
                             };
-                            (observation, checks, balance_checks, cascade_checks)
+                            (observation, checks, balance_checks, cascade_checks, steps.cdn)
                         }
                         Err(_) => (
                             Observation::new(Status::Unknown, "xray_runtime_error"),
                             scenario_rows(Status::Unknown, "xray_runtime_error"),
                             unavailable_balancers(Status::Unknown, "xray_runtime_error"),
                             unavailable_cascades(Status::Unknown, "xray_runtime_error"),
+                            unavailable_cdn(Status::Unknown, "xray_runtime_error"),
                         ),
                     }
                 };
+                let mut native_cdn = native_cdn_task.await.unwrap_or_default();
+                let cdn_checks = entry
+                    .cdn()
+                    .iter()
+                    .zip(cdn_xray_checks)
+                    .enumerate()
+                    .flat_map(|(index, (case, xray))| {
+                        let native = native_cdn
+                            .get_mut(index)
+                            .and_then(Option::take)
+                            .unwrap_or_else(cdn::unavailable_endpoint);
+                        let key = format!("cdn/{}/{}", entry.id(), case.id);
+                        let overall = cdn::overall(xray.config, native.overall, xray.tunnel, xray.route);
+                        vec![
+                            (format!("{key}/dns"), native.dns),
+                            (format!("{key}/tls"), native.tls),
+                            (format!("{key}/http"), native.http),
+                            (format!("{key}/endpoint"), native.overall),
+                            (format!("{key}/config"), xray.config),
+                            (format!("{key}/tunnel"), xray.tunnel),
+                            (format!("{key}/route"), xray.route),
+                            (key, overall),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
                 (
                     format!("profile/{}", entry.id()),
                     observation,
@@ -362,18 +427,20 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     checks,
                     balance_checks,
                     cascade_checks,
+                    cdn_checks,
                 )
             });
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios, balancers, cascades)) = result {
+            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn)) = result {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
                 results.push((key, observation));
                 results.extend(scenarios);
                 results.extend(balancers);
                 results.extend(cascades);
+                results.extend(cdn);
             } else {
                 eprintln!("ProxySignal: probe_task_error");
             }
@@ -403,6 +470,16 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
     for case in entry.cascades() {
         let key = format!("cascade/{}/{}", entry.id(), case.id);
         for component in ["config", "https", "hops"] {
+            results.push((
+                format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        results.push((key, Observation::new(Status::Unknown, code)));
+    }
+    for case in entry.cdn() {
+        let key = format!("cdn/{}/{}", entry.id(), case.id);
+        for component in ["dns", "tls", "http", "endpoint", "config", "tunnel", "route"] {
             results.push((
                 format!("{key}/{component}"),
                 Observation::new(Status::Unknown, code),
