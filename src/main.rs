@@ -44,6 +44,11 @@ async fn run() -> Result<()> {
         .map(telegram::Sender::new)
         .transpose()?;
     let mut state = State::load(&config.state_file).context("state_load")?;
+    // Keep confirmed incidents, but do not present an old checkpoint as a
+    // current observation while the first network checks are still running.
+    let max_age_seconds = config.interval_seconds + config.timeout_seconds;
+    state.expire_stale(max_age_seconds);
+    state.persist(&config.state_file)?;
     let mut timer = tokio::time::interval(Duration::from_secs(config.interval_seconds));
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -51,31 +56,24 @@ async fn run() -> Result<()> {
         tokio::select! {
             _ = shutdown() => break,
             _ = timer.tick() => {
+                state.expire_stale(max_age_seconds);
+                state.persist(&config.state_file)?;
                 // Keep shutdown responsive even if a profile check stalls.
                 let rows = tokio::select! {
                     _ = shutdown() => break,
                     rows = cycle(&config) => rows,
                 };
-                for (key, observation) in &rows {
-                    let time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    println!("ts={time} target={key} status={} evidence={}", observation.status.as_str(), observation.code);
-                    state.observe(key, *observation, sender.is_some());
-                }
+                let healthy = record_cycle(&mut state, &rows, sender.is_some(), max_age_seconds);
                 // Persist transitions *before* any delivery; failed sends stay pending.
                 state.persist(&config.state_file)?;
                 if let Some(sender) = &sender {
-                    for _ in 0..4 { // Bounded notification retries, no per-cycle spam.
-                        let Some(notice) = state.pending.first().cloned() else { break; };
-                        if sender.send(&notice).await.is_err() {
-                            eprintln!("ProxySignal: telegram_delivery_failed");
-                            break;
-                        }
-                        state.pending.remove(0);
-                        state.persist(&config.state_file)?;
+                    tokio::select! {
+                        _ = shutdown() => break,
+                        delivered = sender.deliver_pending(&mut state, &config.state_file) => delivered?,
                     }
                 }
                 if args.len() == 3 {
-                    if rows.iter().any(|(_, o)| o.status != Status::Ok) {
+                    if !healthy {
                         anyhow::bail!("one_shot_unhealthy");
                     }
                     break;
@@ -84,6 +82,36 @@ async fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn record_cycle(state: &mut State, rows: &[ResultRow], notifications: bool, max_age_seconds: u64) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let mut healthy = true;
+    for (key, observation) in rows {
+        let observation = fresh_observation(*observation, now, max_age_seconds);
+        healthy &= observation.status == Status::Ok;
+        println!("ts={} target={key} status={} evidence={}", observation.observed_at, observation.status.as_str(), observation.code);
+        state.observe(key, observation, notifications);
+    }
+    // Refresh comparable records first: expiring a previous cycle here before
+    // its new result would erase a valid failure streak during a slow cycle.
+    state.expire_stale(max_age_seconds);
+    healthy
+}
+
+fn fresh_observation(observation: Observation, now: u64, max_age_seconds: u64) -> Observation {
+    if now
+        .checked_sub(observation.observed_at)
+        .is_some_and(|age| age <= max_age_seconds)
+    {
+        observation
+    } else {
+        let mut stale = Observation::new(Status::Unknown, "observation_stale");
+        stale.observed_at = observation.observed_at;
+        stale
+    }
 }
 
 async fn shutdown() {
@@ -102,6 +130,9 @@ async fn shutdown() {
 }
 
 async fn cycle(config: &Config) -> Vec<ResultRow> {
+    let cycle_started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
     let timeout = Duration::from_secs(config.timeout_seconds);
     // Direct observations come from the same container and endpoint as tunnel observations.
     let mut endpoints = Vec::new();
@@ -475,7 +506,16 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             }
         }
     }
+    stamp_cycle(&mut results, cycle_started_at);
     results
+}
+
+fn stamp_cycle(results: &mut [ResultRow], cycle_started_at: u64) {
+    // Aggregates and the direct baseline share this cycle. A late aggregate
+    // must not make the earlier evidence supporting it appear fresh again.
+    for (_, observation) in results {
+        observation.observed_at = observation.observed_at.min(cycle_started_at);
+    }
 }
 
 fn candidate_key(balancer_key: &str, index: usize) -> String {
@@ -562,6 +602,51 @@ fn classify(steps: &[TargetResult]) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_results_cannot_be_published_as_fresh_success_or_recovery() {
+        let mut observation = Observation::new(Status::Ok, "egress_verified");
+        observation.observed_at = 100;
+        assert_eq!(fresh_observation(observation, 135, 35).status, Status::Ok);
+        for now in [136, 99] {
+            let stale = fresh_observation(observation, now, 35);
+            assert_eq!(stale.status, Status::Unknown);
+            assert_eq!(stale.code, "observation_stale");
+            assert_eq!(stale.observed_at, 100);
+        }
+        observation.status = Status::Failed;
+        assert_eq!(fresh_observation(observation, 136, 35).status, Status::Unknown);
+    }
+
+    #[test]
+    fn late_aggregates_cannot_refresh_old_cycle_evidence() {
+        let mut primary = Observation::new(Status::Ok, "primary_verified");
+        primary.observed_at = 100;
+        let mut aggregate = Observation::new(Status::Ok, "failover_verified");
+        aggregate.observed_at = 170;
+        let mut rows = vec![("primary".to_string(), primary), ("overall".to_string(), aggregate)];
+        stamp_cycle(&mut rows, 105);
+        assert_eq!(rows[0].1.observed_at, 100);
+        assert_eq!(rows[1].1.observed_at, 105);
+        for (_, observation) in rows {
+            assert_eq!(fresh_observation(observation, 196, 90).status, Status::Unknown);
+        }
+    }
+
+    #[test]
+    fn fresh_slow_cycles_still_confirm_consecutive_failures() {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mut state = State::default();
+        let mut first = Observation::new(Status::Failed, "all_egress_probes_failed");
+        // The first cycle began 30 seconds before the second; both take 10s.
+        first.observed_at = now - 40;
+        state.observe("profile/lab", first, true);
+        let mut second = first;
+        second.observed_at = now - 10;
+        assert!(!record_cycle(&mut state, &[("profile/lab".to_string(), second)], true, 35));
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.pending[0].status, Status::Failed);
+    }
     #[test]
     fn candidate_observation_keys_never_embed_sensitive_outbound_tags() {
         let key = candidate_key("balancer/source/latency", 1);

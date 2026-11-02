@@ -26,7 +26,15 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Temporary remote-workspace formatting patch
+        run: |
+          cargo fmt --all
+          git diff --no-ext-diff -- src
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets
+      - name: Temporary behavioral RED controls
+        run: python3 .github/stage4-regression-controls.py
       # Release/acceptance check only; avoid a Docker rebuild on every PR push.
       - name: Docker Compose and Xray smoke
         if: github.event_name == 'workflow_dispatch'

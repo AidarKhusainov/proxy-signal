@@ -152,9 +152,11 @@ pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
 }
 
 fn backup_status(total: usize, successes: usize, failures: usize) -> Observation {
-    if successes > 0 {
+    if successes == total && total > 0 {
         Observation::new(Status::Ok, "failover_backup_https_verified")
-    } else if failures == total {
+    } else if successes > 0 && failures > 0 {
+        Observation::new(Status::Degraded, "failover_backups_partially_failed")
+    } else if failures == total && total > 0 {
         Observation::new(Status::Failed, "failover_all_backups_https_failed")
     } else {
         Observation::new(Status::Unknown, "failover_backups_unverified")
@@ -180,6 +182,9 @@ pub fn overall(
     }
     if switch.status == Status::Failed {
         return Observation::new(Status::Failed, "failover_switch_failed");
+    }
+    if backup.status == Status::Degraded {
+        return Observation::new(Status::Degraded, "failover_partial_backups");
     }
     if primary.status != Status::Ok || backup.status != Status::Ok || switch.status != Status::Ok {
         if primary.status == Status::Ok
@@ -423,7 +428,9 @@ async fn run(
         let backup = backup_status(candidates.len(), successes, failures);
         let mut switch = Observation::new(Status::Unknown, "failover_switch_not_executed");
         let mut recovery = Observation::new(Status::Unknown, "failover_recovery_not_requested");
-        if primary.status == Status::Ok && backup.status == Status::Ok {
+        // A verified alternative permits the switch trial even when other
+        // backups failed or lack evidence. Keep its result independent.
+        if primary.status == Status::Ok && successes > 0 {
             primary_child.stop().await;
             // Ensure the injected failure is real before checking route selection.
             if tokio::net::TcpStream::connect(("127.0.0.1", case.control_port))
