@@ -522,6 +522,26 @@ mod tests {
         assert!(listener.local_addr().is_ok());
     }
 
+    #[tokio::test]
+    async fn expired_phase_does_not_reuse_stale_route_evidence() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("access");
+        std::fs::write(
+            &path,
+            "2026/01/01 from 127.0.0.1:123 accepted //example.com:443 [proxy-signal-probe-in ==> backup]",
+        ).unwrap();
+        let mut cursor = 0;
+        let result = route_phase(
+            &case(),
+            "http://127.0.0.1:9",
+            &path,
+            &mut cursor,
+            Instant::now(),
+            Phase::Backup,
+        ).await;
+        assert_eq!(result.status, Status::Unknown);
+    }
+
     #[test]
     fn phase_evidence_is_not_reused() {
         let dir = TempDir::new().unwrap();
