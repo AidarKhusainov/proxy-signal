@@ -200,12 +200,16 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         };
                         let missing = Observation::new(status, code);
                         let overall = if config.status == Status::Ok { missing } else { config };
-                        [
+                        let mut rows = vec![
                             (format!("{key}/config"), config),
                             (format!("{key}/candidates"), missing),
                             (format!("{key}/route"), missing),
-                            (key, overall),
-                        ]
+                            (key.clone(), overall),
+                        ];
+                        rows.extend(case.candidates.iter().map(|tag| {
+                            (format!("{key}/candidate/{tag}"), missing)
+                        }));
+                        rows
                     }).collect::<Vec<_>>()
                 };
                 let (observation, checks, balance_checks) = if xray::prepare(document.clone(), 9876).is_err() {
@@ -252,12 +256,17 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                 .zip(steps.balancers)
                                 .flat_map(|(case, evidence)| {
                                     let key = format!("balancer/{}/{}", entry.id(), case.id);
-                                    [
+                                    let mut rows = vec![
                                         (format!("{key}/config"), evidence.config),
                                         (format!("{key}/candidates"), evidence.candidates),
                                         (format!("{key}/route"), evidence.route),
-                                        (key, evidence.overall),
-                                    ]
+                                        (key.clone(), evidence.overall),
+                                    ];
+                                    rows.extend(case.candidates.iter().zip(evidence.candidate_details)
+                                        .map(|(tag, observation)| {
+                                            (format!("{key}/candidate/{tag}"), observation)
+                                        }));
+                                    rows
                                 })
                                 .collect();
                             let observation = if targets.iter().all(|(_, ip)| ip.is_none()) {
@@ -318,6 +327,12 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
         for component in ["config", "candidates", "route"] {
             results.push((
                 format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        for tag in &case.candidates {
+            results.push((
+                format!("{key}/candidate/{tag}"),
                 Observation::new(Status::Unknown, code),
             ));
         }
