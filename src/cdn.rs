@@ -223,6 +223,7 @@ fn attributable(profile: &Value, case: &CdnScenario) -> bool {
 
 /// Real HTTPS over the unchanged full-profile diagnostic inbound. Xray access
 /// evidence must identify the configured outbound; a raw HTTPS 200 is not proof.
+#[cfg(test)]
 pub fn tunnel(
     profile: &Value,
     case: &CdnScenario,
