@@ -514,10 +514,16 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
     for case in entry.failover() {
         let key = format!("failover/{}/{}", entry.id(), case.id);
         for component in ["config", "primary", "backup", "switch"] {
-            results.push((format!("{key}/{component}"), Observation::new(Status::Unknown, code)));
+            results.push((
+                format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
         }
         if case.restore_primary {
-            results.push((format!("{key}/recovery"), Observation::new(Status::Unknown, code)));
+            results.push((
+                format!("{key}/recovery"),
+                Observation::new(Status::Unknown, code),
+            ));
         }
         results.push((key, Observation::new(Status::Unknown, code)));
     }
