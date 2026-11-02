@@ -171,24 +171,41 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             match result {
                 Ok((entry, Ok(Ok(document)))) => {
                     completed.insert(entry.id().to_string());
-                    results.push((
-                        format!("source/{}", entry.id()),
-                        Observation::new(Status::Ok, "source_loaded"),
-                    ));
-                    profiles.push((entry, document));
+                    match source::select(&entry, document) {
+                        Ok(selected) => {
+                            results.push((
+                                format!("source/{}", entry.id()),
+                                Observation::new(Status::Ok, "source_loaded"),
+                            ));
+                            for selected in selected {
+                                if let Some(document) = selected.document {
+                                    profiles.push((selected.source, document));
+                                } else {
+                                    unavailable_profile(&mut results, &selected.source, selected.unavailable_code);
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            results.push((
+                                format!("source/{}", entry.id()),
+                                Observation::new(Status::Failed, "source_invalid"),
+                            ));
+                            for profile in entry.expanded() {
+                                unavailable_profile(&mut results, &profile, "source_invalid");
+                            }
+                        }
+                    }
                 }
                 Ok((entry, _)) => {
                     completed.insert(entry.id().to_string());
-                    // A source incident is distinct from a VPN failure.
+                    // Failed subscription refresh is not evidence of a VPN failure.
                     results.push((
                         format!("source/{}", entry.id()),
                         Observation::new(Status::Failed, "source_unavailable"),
                     ));
-                    results.push((
-                        format!("profile/{}", entry.id()),
-                        Observation::new(Status::Unknown, "source_unavailable"),
-                    ));
-                    unavailable_checks(&mut results, &entry, "source_unavailable");
+                    for profile in entry.expanded() {
+                        unavailable_profile(&mut results, &profile, "source_unavailable");
+                    }
                 }
                 Err(_) => eprintln!("ProxySignal: source_task_error"),
             }
@@ -199,11 +216,9 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     format!("source/{}", entry.id()),
                     Observation::new(Status::Unknown, "source_task_error"),
                 ));
-                results.push((
-                    format!("profile/{}", entry.id()),
-                    Observation::new(Status::Unknown, "source_task_error"),
-                ));
-                unavailable_checks(&mut results, entry, "source_task_error");
+                for profile in entry.expanded() {
+                    unavailable_profile(&mut results, &profile, "source_task_error");
+                }
             }
         }
     }
@@ -462,7 +477,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         ]
                     })
                     .collect::<Vec<_>>();
-                let client_evidence = xray::has_enabled_sniffing(&document).then(|| {
+                let client_evidence = (entry.id().contains('/') || xray::has_enabled_sniffing(&document)).then(|| {
                     (
                         format!("profile/{}/client", entry.id()),
                         Observation::new(Status::Unknown, "client_inbound_unverified"),
@@ -530,8 +545,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
         for (entry, _) in batch {
             let key = format!("profile/{}", entry.id());
             if !completed.contains(&key) {
-                results.push((key, Observation::new(Status::Unknown, "probe_task_error")));
-                unavailable_checks(&mut results, entry, "probe_task_error");
+                unavailable_profile(&mut results, entry, "probe_task_error");
             }
         }
     }
@@ -549,6 +563,20 @@ fn stamp_cycle(results: &mut [ResultRow], cycle_started_at: u64) {
 
 fn candidate_key(balancer_key: &str, index: usize) -> String {
     format!("{balancer_key}/candidate/{index}")
+}
+
+fn unavailable_profile(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
+    results.push((
+        format!("profile/{}", entry.id()),
+        Observation::new(Status::Unknown, code),
+    ));
+    unavailable_checks(results, entry, code);
+    if entry.id().contains('/') {
+        results.push((
+            format!("profile/{}/client", entry.id()),
+            Observation::new(Status::Unknown, "client_inbound_unverified"),
+        ));
+    }
 }
 
 fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
@@ -631,6 +659,44 @@ fn classify(steps: &[TargetResult]) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn selected_profiles_have_independent_stable_incidents_across_restart_and_missing_update() {
+        let source: Source = serde_yaml::from_str("kind: https\\nid: subscription\\nurl: https://example.org/sub\\nprofiles:\\n  - { id: first, remarks: A }\\n  - { id: second, remarks: B }\\n").unwrap();
+        let doc_a = serde_json::json!({"remarks":"A","outbounds":[{"protocol":"vless"}]});
+        let doc_b = serde_json::json!({"remarks":"B","outbounds":[{"protocol":"vless"}]});
+        let selection = source::select(&source, serde_json::json!([doc_a.clone(), doc_b.clone()])).unwrap();
+        let a = format!("profile/{}", selection[0].source.id());
+        let b = format!("profile/{}", selection[1].source.id());
+        let mut state = State::default();
+        for _ in 0..2 {
+            state.observe(&a, Observation::new(Status::Failed, "all_egress_probes_failed"), true);
+            state.observe(&b, Observation::new(Status::Ok, "egress_verified"), true);
+        }
+        assert_eq!(state.pending.len(), 1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        state.persist(&path).unwrap();
+        let mut state = State::load(&path).unwrap();
+        let reordered = source::select(&source, serde_json::json!([doc_b, doc_a])).unwrap();
+        assert_eq!(a, format!("profile/{}", reordered[0].source.id()));
+        assert_eq!(b, format!("profile/{}", reordered[1].source.id()));
+        let missing = source::select(&source, serde_json::json!([{"remarks":"B","outbounds":[{"protocol":"vless"}]}])).unwrap();
+        let mut rows = Vec::new();
+        unavailable_profile(&mut rows, &missing[0].source, missing[0].unavailable_code);
+        assert_eq!(rows[0].0, a);
+        assert_eq!(rows[0].1.status, Status::Unknown);
+        state.observe(&a, rows[0].1, true);
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.pending[0].key, a);
+        assert_eq!(state.pending[0].status, Status::Failed);
+        state.observe(&b, Observation::new(Status::Ok, "egress_verified"), true);
+        state.observe(&a, Observation::new(Status::Ok, "egress_verified"), true);
+        assert_eq!(state.pending.len(), 2);
+        assert_eq!(state.pending[1].key, a);
+        assert_eq!(state.pending[1].status, Status::Ok);
+    }
 
     #[test]
     fn delayed_results_cannot_be_published_as_fresh_success_or_recovery() {
