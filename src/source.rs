@@ -5,7 +5,7 @@ use reqwest::{
     Client,
 };
 use serde_json::Value;
-use std::{fs::File, io::Read, time::Duration};
+use std::{collections::BTreeMap, fs::File, io::Read, path::PathBuf, time::Duration};
 
 const MAX_PROFILE: usize = 512 * 1024;
 const MAX_SUBSCRIPTION: usize = 2 * 1024 * 1024;
@@ -74,27 +74,7 @@ pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
             buf
         }
         Source::Https { url, headers, .. } => {
-            let mut request_headers = HeaderMap::new();
-            for (name, path) in headers {
-                let mut secret = Vec::new();
-                File::open(path)
-                    .context("secret_read")?
-                    .take(2049)
-                    .read_to_end(&mut secret)
-                    .context("secret_read")?;
-                let secret = std::str::from_utf8(&secret).context("secret_invalid")?;
-                let value = secret.trim_end_matches(['\r', '\n']);
-                if value.is_empty()
-                    || value.len() > 2048
-                    || value.bytes().any(|b| b == b'\r' || b == b'\n')
-                {
-                    bail!("secret_invalid");
-                }
-                request_headers.insert(
-                    HeaderName::from_bytes(name.as_bytes()).context("header_invalid")?,
-                    HeaderValue::from_str(value).context("header_invalid")?,
-                );
-            }
+            let request_headers = read_headers(headers)?;
             let (host, addrs) = config::public_resolution(url, timeout).await?;
             let client = Client::builder()
                 .resolve_to_addrs(&host, &addrs)
@@ -120,6 +100,32 @@ pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
     serde_json::from_slice(&bytes).context("source_json")
 }
 
+fn read_headers(headers: &BTreeMap<String, PathBuf>) -> Result<HeaderMap> {
+    let mut request_headers = HeaderMap::new();
+    for (name, path) in headers {
+        let mut secret = Vec::new();
+        File::open(path)
+            .context("secret_read")?
+            .take(2049)
+            .read_to_end(&mut secret)
+            .context("secret_read")?;
+        let secret = std::str::from_utf8(&secret).context("secret_invalid")?;
+        let value = secret.trim_end_matches(['\r', '\n']);
+        if value.is_empty()
+            || value.len() > 2048
+            || value.bytes().any(|b| b == b'\r' || b == b'\n')
+        {
+            bail!("secret_invalid");
+        }
+        request_headers.insert(
+            HeaderName::from_bytes(name.as_bytes()).context("header_invalid")?,
+            HeaderValue::from_str(value).context("header_invalid")?,
+        );
+    }
+
+    Ok(request_headers)
+}
+
 pub async fn read_limited(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.context("response_read")? {
@@ -136,6 +142,25 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
 
+
+    #[test]
+    fn loads_authorization_and_hwid_headers_from_files_without_mutating_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret");
+        std::fs::write(&path, "test-device-value\\n").unwrap();
+        let headers = BTreeMap::from([
+            ("X-HWID".to_string(), path.clone()),
+            ("User-Agent".to_string(), path.clone()),
+            ("Accept".to_string(), path.clone()),
+        ]);
+        let values = read_headers(&headers).unwrap();
+        assert_eq!(values.get("X-HWID").unwrap(), "test-device-value");
+        assert_eq!(values.get("User-Agent").unwrap(), "test-device-value");
+        assert_eq!(values.get("Accept").unwrap(), "test-device-value");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "test-device-value\\n");
+        std::fs::write(&path, "bad\\nvalue").unwrap();
+        assert!(read_headers(&headers).is_err());
+    }
 
     #[test]
     fn select_full_documents_by_explicit_remarks_in_any_order() {
