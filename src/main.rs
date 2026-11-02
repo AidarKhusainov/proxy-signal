@@ -181,7 +181,11 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                 if let Some(document) = selected.document {
                                     profiles.push((selected.source, document));
                                 } else {
-                                    unavailable_profile(&mut results, &selected.source, selected.unavailable_code);
+                                    unavailable_profile(
+                                        &mut results,
+                                        &selected.source,
+                                        selected.unavailable_code,
+                                    );
                                 }
                             }
                         }
@@ -672,18 +676,22 @@ fn classify(steps: &[TargetResult]) -> Observation {
 mod tests {
     use super::*;
 
-
     #[test]
     fn selected_profiles_have_independent_stable_incidents_across_restart_and_missing_update() {
         let source: Source = serde_yaml::from_str("kind: https\\nid: subscription\\nurl: https://example.org/sub\\nprofiles:\\n  - { id: first, remarks: A }\\n  - { id: second, remarks: B }\\n").unwrap();
         let doc_a = serde_json::json!({"remarks":"A","outbounds":[{"protocol":"vless"}]});
         let doc_b = serde_json::json!({"remarks":"B","outbounds":[{"protocol":"vless"}]});
-        let selection = source::select(&source, serde_json::json!([doc_a.clone(), doc_b.clone()])).unwrap();
+        let selection =
+            source::select(&source, serde_json::json!([doc_a.clone(), doc_b.clone()])).unwrap();
         let a = format!("profile/{}", selection[0].source.id());
         let b = format!("profile/{}", selection[1].source.id());
         let mut state = State::default();
         for _ in 0..2 {
-            state.observe(&a, Observation::new(Status::Failed, "all_egress_probes_failed"), true);
+            state.observe(
+                &a,
+                Observation::new(Status::Failed, "all_egress_probes_failed"),
+                true,
+            );
             state.observe(&b, Observation::new(Status::Ok, "egress_verified"), true);
         }
         assert_eq!(state.pending.len(), 1);
@@ -694,7 +702,11 @@ mod tests {
         let reordered = source::select(&source, serde_json::json!([doc_b, doc_a])).unwrap();
         assert_eq!(a, format!("profile/{}", reordered[0].source.id()));
         assert_eq!(b, format!("profile/{}", reordered[1].source.id()));
-        let missing = source::select(&source, serde_json::json!([{"remarks":"B","outbounds":[{"protocol":"vless"}]}])).unwrap();
+        let missing = source::select(
+            &source,
+            serde_json::json!([{"remarks":"B","outbounds":[{"protocol":"vless"}]}]),
+        )
+        .unwrap();
         let mut rows = Vec::new();
         unavailable_profile(&mut rows, &missing[0].source, missing[0].unavailable_code);
         assert_eq!(rows[0].0, a);
