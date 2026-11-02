@@ -35,27 +35,41 @@ pub fn select(source: &Source, document: Value) -> Result<Vec<SelectedProfile>> 
     if array.len() > MAX_ARRAY_ITEMS {
         bail!("source_array_too_large");
     }
-    Ok(source.profiles().iter().zip(entries).map(|(spec, entry)| {
-        let mut matching = array.iter().filter(|item| {
-            item.get("remarks").and_then(Value::as_str) == Some(spec.remarks.as_str())
-        });
-        let first = matching.next();
-        let duplicate = matching.next().is_some();
-        let valid = first.is_some_and(|value| {
-            value.is_object()
-                && value.get("outbounds").and_then(Value::as_array)
-                    .is_some_and(|outbounds| !outbounds.is_empty())
-        });
-        SelectedProfile {
-            source: entry,
-            document: if valid && !duplicate { first.cloned() } else { None },
-            unavailable_code: if duplicate { "profile_duplicate" }
-                else if first.is_none() { "profile_missing" }
-                else { "profile_invalid" },
-        }
-    }).collect())
+    Ok(source
+        .profiles()
+        .iter()
+        .zip(entries)
+        .map(|(spec, entry)| {
+            let mut matching = array.iter().filter(|item| {
+                item.get("remarks").and_then(Value::as_str) == Some(spec.remarks.as_str())
+            });
+            let first = matching.next();
+            let duplicate = matching.next().is_some();
+            let valid = first.is_some_and(|value| {
+                value.is_object()
+                    && value
+                        .get("outbounds")
+                        .and_then(Value::as_array)
+                        .is_some_and(|outbounds| !outbounds.is_empty())
+            });
+            SelectedProfile {
+                source: entry,
+                document: if valid && !duplicate {
+                    first.cloned()
+                } else {
+                    None
+                },
+                unavailable_code: if duplicate {
+                    "profile_duplicate"
+                } else if first.is_none() {
+                    "profile_missing"
+                } else {
+                    "profile_invalid"
+                },
+            }
+        })
+        .collect())
 }
-
 
 pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
     let max_bytes = if source.profiles().is_empty() {
@@ -111,9 +125,7 @@ fn read_headers(headers: &BTreeMap<String, PathBuf>) -> Result<HeaderMap> {
             .context("secret_read")?;
         let secret = std::str::from_utf8(&secret).context("secret_invalid")?;
         let value = secret.trim_end_matches(['\r', '\n']);
-        if value.is_empty()
-            || value.len() > 2048
-            || value.bytes().any(|b| b == b'\r' || b == b'\n')
+        if value.is_empty() || value.len() > 2048 || value.bytes().any(|b| b == b'\r' || b == b'\n')
         {
             bail!("secret_invalid");
         }
@@ -142,7 +154,6 @@ mod tests {
     use super::*;
     use std::net::IpAddr;
 
-
     #[test]
     fn loads_authorization_and_hwid_headers_from_files_without_mutating_them() {
         let dir = tempfile::tempdir().unwrap();
@@ -157,7 +168,10 @@ mod tests {
         assert_eq!(values.get("X-HWID").unwrap(), "test-device-value");
         assert_eq!(values.get("User-Agent").unwrap(), "test-device-value");
         assert_eq!(values.get("Accept").unwrap(), "test-device-value");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "test-device-value\\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "test-device-value\\n"
+        );
         std::fs::write(&path, "bad\\nvalue").unwrap();
         assert!(read_headers(&headers).is_err());
     }
@@ -167,7 +181,10 @@ mod tests {
         let source: Source = serde_yaml::from_str("kind: https\\nid: happ\\nurl: https://example.org/sub\\nprofiles:\\n  - { id: sweden, remarks: Sweden }\\n  - { id: germany, remarks: Germany }\\n").unwrap();
         let original = serde_json::json!({"remarks":"Sweden","inbounds":[{"sniffing":{"enabled":true}}],"dns":{"servers":["1.1.1.1"]},"routing":{"rules":[]},"outbounds":[{"protocol":"vless"}],"observatory":{"subjectSelector":["a"]}});
         let other = serde_json::json!({"remarks":"Germany","outbounds":[{"protocol":"vless"}]});
-        for array in [vec![original.clone(), other.clone()], vec![other.clone(), original.clone()]] {
+        for array in [
+            vec![original.clone(), other.clone()],
+            vec![other.clone(), original.clone()],
+        ] {
             let entries = select(&source, Value::Array(array)).unwrap();
             assert_eq!(entries.len(), 2);
             assert_eq!(entries[0].source.id(), "happ/sweden");
@@ -197,7 +214,8 @@ mod tests {
 
     #[test]
     fn legacy_single_object_remains_supported() {
-        let source: Source = serde_yaml::from_str("kind: file\\nid: original\\npath: /tmp/profile.json\\n").unwrap();
+        let source: Source =
+            serde_yaml::from_str("kind: file\\nid: original\\npath: /tmp/profile.json\\n").unwrap();
         let document = serde_json::json!({"outbounds":[{"protocol":"vless"}]});
         let entries = select(&source, document.clone()).unwrap();
         assert_eq!(entries[0].source.id(), "original");
