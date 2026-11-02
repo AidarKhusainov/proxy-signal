@@ -131,3 +131,85 @@ do
     esac
 done
 echo 'PASS: actual Xray routing evidence verified; missing DNS evidence stayed UNKNOWN'
+
+# Optional stage-3 proof: Xray executes separate HTTPS probes for a healthy
+# direct outbound and an intentionally unreachable SOCKS candidate. This is
+# NOT a leastPing selection or failover proof. No VPN credentials are used.
+cat > "$tmp/balancers.yaml" <<'YAML'
+version: 1
+interval_seconds: 300
+timeout_seconds: 45
+parallelism: 1
+state_file: /data/state.json
+endpoints:
+  - id: ipify
+    url: https://api.ipify.org
+sources:
+  - id: balancers
+    kind: file
+    path: /profiles/balancers.json
+    balancers:
+      - id: latency
+        url: https://example.com/
+        balancer_tag: pool
+        strategy: leastPing
+        candidates: [node-good, node-broken]
+        fallback_tag: node-good
+YAML
+cat > "$tmp/balancers.json" <<'JSON'
+{
+  "routing": {
+    "rules": [{"type":"field","domain":["full:example.com"],"balancerTag":"pool"}],
+    "balancers": [{
+      "tag":"pool",
+      "selector":["node-"],
+      "fallbackTag":"node-good",
+      "strategy":{"type":"leastPing"}
+    }]
+  },
+  "observatory": {
+    "subjectSelector":["node-"],
+    "probeUrl":"https://example.com/",
+    "probeInterval":"10s",
+    "enableConcurrency":true
+  },
+  "outbounds": [
+    {"tag":"node-good","protocol":"freedom"},
+    {"tag":"node-broken","protocol":"socks","settings":{"servers":[{"address":"127.0.0.1","port":19999}]}}
+  ]
+}
+JSON
+
+set +e
+output=$(docker run --rm --read-only --user 65532:65532 \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 384m \
+    --tmpfs /tmp:rw,nosuid,noexec,size=16m,uid=65532,gid=65532,mode=0700 \
+    --tmpfs /data:rw,nosuid,noexec,size=4m,uid=65532,gid=65532,mode=0700 \
+    --mount "type=bind,src=$tmp/balancers.yaml,dst=/etc/proxy-signal/config.yaml,readonly" \
+    --mount "type=bind,src=$tmp/balancers.json,dst=/profiles/balancers.json,readonly" \
+    proxy-signal:smoke /etc/proxy-signal/config.yaml --once 2>&1)
+result=$?
+set -e
+printf '%s\n' "$output"
+if [ "$result" -eq 0 ]; then
+    echo 'FAIL: an unreachable balancer candidate incorrectly passed all checks' >&2
+    exit 1
+fi
+for evidence in \
+    'target=balancer/balancers/latency/config status=OK evidence=balancer_config_valid' \
+    'target=balancer/balancers/latency/candidate/node-good status=OK evidence=candidate_https_verified' \
+    'target=balancer/balancers/latency/candidate/node-broken status=FAILED evidence=candidate_https_failed' \
+    'target=balancer/balancers/latency/candidates status=DEGRADED evidence=candidates_partially_failed' \
+    'target=balancer/balancers/latency status=DEGRADED evidence=balancer_partial_candidates'
+do
+    case "$output" in
+        *"$evidence"*) ;;
+        *) echo "FAIL: missing actual Xray balancer candidate evidence: $evidence" >&2; exit 1 ;;
+    esac
+done
+case "$output" in
+    *'target=balancer/balancers/latency/route status=OK'*) 
+        echo 'FAIL: leastPing selection was asserted without observatory telemetry' >&2
+        exit 1 ;;
+esac
+echo 'PASS: real Xray detected partial candidate failure without leastPing false OK'
