@@ -93,7 +93,17 @@ pub fn observed_outbound<'a>(
 /// An access event for this exact inbound and destination is required.
 /// Neither a static routing rule nor an HTTPS response proves outbound selection.
 pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Observation {
-    let actual = match observed_outbound(&case.url, "proxy-signal-probe-in", access) {
+    evaluate_for_inbound(case, http_ok, access, error, "proxy-signal-probe-in")
+}
+
+pub fn evaluate_for_inbound(
+    case: &Scenario,
+    http_ok: bool,
+    access: &str,
+    error: &str,
+    inbound_tag: &str,
+) -> Observation {
+    let actual = match observed_outbound(&case.url, inbound_tag, access) {
         Ok(tag) => tag,
         Err(reason) => return Observation::new(Status::Unknown, reason),
     };
