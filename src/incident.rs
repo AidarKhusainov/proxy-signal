@@ -56,6 +56,8 @@ pub struct State {
 #[serde(deny_unknown_fields)]
 struct Record {
     active: Option<Status>,
+    #[serde(default)]
+    active_code: Option<String>,
     streak: u8,
     last_status: Option<Status>,
     last_code: String,
@@ -92,10 +94,14 @@ impl State {
             anyhow::bail!("state_oversize");
         }
         let data = fs::read(path).context("state_read")?;
-        let state: State = serde_json::from_slice(&data).context("state_invalid")?;
+        let mut state: State = serde_json::from_slice(&data).context("state_invalid")?;
         if state.version != 1 || state.pending.len() > 128 || state.records.len() > 256 {
             anyhow::bail!("state_version_or_limits");
         }
+        // Old PR versions used raw outbound tags as candidate keys. Never
+        // deliver their pending notifications or retain them in persisted state.
+        state.records.retain(|key, _| !legacy_candidate_key(key));
+        state.pending.retain(|notice| !legacy_candidate_key(&notice.key));
         Ok(state)
     }
 
@@ -112,6 +118,7 @@ impl State {
                     };
                 if record.streak >= 2 && record.active != Some(o.status) {
                     record.active = Some(o.status);
+                    record.active_code = Some(o.code.to_string());
                     notify = Some(o.status);
                 }
             }
@@ -120,9 +127,27 @@ impl State {
                 if record.active.take().is_some() {
                     notify = Some(Status::Ok);
                 }
+                record.active_code = None;
             }
             Status::Unknown | Status::Unsupported => {
                 record.streak = 0;
+                // Candidate recovery is not evidence of a verified leastPing
+                // decision. Retire only a confirmed candidate outage, with an
+                // UNKNOWN notice rather than a false OK/recovery message.
+                if o.status == Status::Unknown
+                    && o.code == "balancer_candidates_healthy_route_unverified"
+                    && matches!(
+                        record.active_code.as_deref().or_else(|| {
+                            (record.last_status == record.active)
+                                .then_some(record.last_code.as_str())
+                        }),
+                        Some("balancer_partial_candidates" | "balancer_all_candidates_failed")
+                    )
+                {
+                    record.active = None;
+                    record.active_code = None;
+                    notify = Some(Status::Unknown);
+                }
             }
         }
         record.last_status = Some(o.status);
@@ -170,6 +195,12 @@ impl State {
     }
 }
 
+fn legacy_candidate_key(key: &str) -> bool {
+    key.rsplit_once("/candidate/").is_some_and(|(_, suffix)| {
+        !matches!(suffix.parse::<usize>(), Ok(index) if index < 8 && suffix == index.to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +235,80 @@ mod tests {
         );
         assert_eq!(s.pending.len(), 2);
         assert_eq!(s.pending[1].status, Status::Ok);
+    }
+
+    #[test]
+    fn recovers_candidate_outage_without_claiming_verified_balancer_route() {
+        let mut state = State::default();
+        let key = "balancer/source/pool";
+        let degraded = Observation::new(Status::Degraded, "balancer_partial_candidates");
+        let recovered = Observation::new(
+            Status::Unknown,
+            "balancer_candidates_healthy_route_unverified",
+        );
+        for _ in 0..2 {
+            state.observe(key, degraded, true);
+        }
+        assert_eq!(state.pending.len(), 1);
+        state.observe(key, Observation::new(Status::Unknown, "balancer_incomplete_evidence"), true);
+        assert_eq!(state.pending.len(), 1); // uncertain candidates cannot close an outage
+        state.observe(key, recovered, true);
+        state.observe(key, recovered, true);
+        assert_eq!(state.pending.len(), 2);
+        assert_eq!(state.pending[1].status, Status::Unknown);
+        assert_eq!(state.records[key].active, None);
+
+        for _ in 0..2 {
+            state.observe(key, degraded, true);
+        }
+        assert_eq!(state.pending.len(), 3); // a new real outage can be reported
+
+        let mut route_failure = State::default();
+        for _ in 0..2 {
+            route_failure.observe(
+                key,
+                Observation::new(Status::Failed, "balancer_route_failed"),
+                true,
+            );
+        }
+        route_failure.observe(key, recovered, true);
+        assert_eq!(route_failure.pending.len(), 1);
+        assert_eq!(route_failure.records[key].active, Some(Status::Failed));
+
+        let mut total_failure = State::default();
+        for _ in 0..2 {
+            total_failure.observe(
+                key,
+                Observation::new(Status::Failed, "balancer_all_candidates_failed"),
+                true,
+            );
+        }
+        total_failure.observe(key, recovered, true);
+        assert_eq!(total_failure.pending[1].status, Status::Unknown);
+    }
+
+    #[test]
+    fn legacy_candidate_tags_are_removed_from_restored_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        for _ in 0..2 {
+            state.observe(
+                "balancer/source/pool/candidate/private-tag",
+                Observation::new(Status::Failed, "candidate_https_failed"),
+                true,
+            );
+        }
+        state.observe(
+            "balancer/source/pool/candidate/0",
+            Observation::new(Status::Failed, "candidate_https_failed"),
+            true,
+        );
+        state.persist(&path).unwrap();
+        let restored = State::load(&path).unwrap();
+        assert!(restored.pending.is_empty());
+        assert_eq!(restored.records.len(), 1);
+        assert!(restored.records.contains_key("balancer/source/pool/candidate/0"));
     }
 
     #[test]

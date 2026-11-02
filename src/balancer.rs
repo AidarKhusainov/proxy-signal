@@ -245,12 +245,17 @@ pub fn overall(config: Observation, candidates: Observation, route: Observation)
     if config.status != Status::Ok {
         return config;
     }
-    if candidates.status == Status::Failed || route.status == Status::Failed {
-        Observation::new(Status::Failed, "balancer_failed")
+    if candidates.status == Status::Failed {
+        Observation::new(Status::Failed, "balancer_all_candidates_failed")
+    } else if route.status == Status::Failed {
+        Observation::new(Status::Failed, "balancer_route_failed")
     } else if candidates.status == Status::Degraded {
         Observation::new(Status::Degraded, "balancer_partial_candidates")
     } else if candidates.status == Status::Ok && route.status == Status::Ok {
         Observation::new(Status::Ok, "balancer_verified")
+    } else if candidates.status == Status::Ok && route.status == Status::Unknown {
+        // Candidate availability is verified, but balancer selection is not.
+        Observation::new(Status::Unknown, "balancer_candidates_healthy_route_unverified")
     } else {
         Observation::new(Status::Unknown, "balancer_incomplete_evidence")
     }
@@ -348,6 +353,10 @@ mod tests {
         assert_eq!(candidate_status(&[good, bad]).status, Status::Degraded);
         assert_eq!(candidate_status(&[bad, unknown]).status, Status::Unknown);
         assert_eq!(overall(good, good, unknown).status, Status::Unknown);
+        assert_eq!(
+            overall(good, good, unknown).code,
+            "balancer_candidates_healthy_route_unverified"
+        );
         assert_eq!(
             overall(good, candidate_status(&[good, bad]), unknown).status,
             Status::Degraded

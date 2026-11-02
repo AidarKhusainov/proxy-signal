@@ -215,7 +215,8 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                             rows.extend(
                                 case.candidates
                                     .iter()
-                                    .map(|tag| (format!("{key}/candidate/{tag}"), missing)),
+                                    .enumerate()
+                                    .map(|(index, _)| (candidate_key(&key, index), missing)),
                             );
                             rows
                         })
@@ -283,11 +284,13 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                         (key.clone(), evidence.overall),
                                     ];
                                     rows.extend(
-                                        case.candidates.iter().zip(evidence.candidate_details).map(
-                                            |(tag, observation)| {
-                                                (format!("{key}/candidate/{tag}"), observation)
-                                            },
-                                        ),
+                                        case.candidates
+                                            .iter()
+                                            .zip(evidence.candidate_details)
+                                            .enumerate()
+                                            .map(|(index, (_, observation))| {
+                                                (candidate_key(&key, index), observation)
+                                            }),
                                     );
                                     rows
                                 })
@@ -338,6 +341,10 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
     results
 }
 
+fn candidate_key(balancer_key: &str, index: usize) -> String {
+    format!("{balancer_key}/candidate/{index}")
+}
+
 fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
     for case in entry.scenarios() {
         results.push((
@@ -353,9 +360,9 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
                 Observation::new(Status::Unknown, code),
             ));
         }
-        for tag in &case.candidates {
+        for (index, _) in case.candidates.iter().enumerate() {
             results.push((
-                format!("{key}/candidate/{tag}"),
+                candidate_key(&key, index),
                 Observation::new(Status::Unknown, code),
             ));
         }
@@ -380,6 +387,13 @@ fn classify(steps: &[TargetResult]) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn candidate_observation_keys_never_embed_sensitive_outbound_tags() {
+        let key = candidate_key("balancer/source/latency", 1);
+        assert_eq!(key, "balancer/source/latency/candidate/1");
+        assert!(!key.contains("private-operator-node"));
+    }
+
     #[test]
     fn partial_checks_are_not_ok() {
         assert_eq!(

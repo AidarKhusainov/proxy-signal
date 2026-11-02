@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
+    future::Future,
     io::Read,
     net::{IpAddr, SocketAddr, TcpListener},
     path::Path,
@@ -19,6 +20,7 @@ use tempfile::TempDir;
 use tokio::{
     net::TcpStream,
     process::{Child, Command},
+    task::JoinSet,
     time::{sleep, timeout_at, Instant},
 };
 
@@ -195,7 +197,52 @@ pub async fn check(
             .await
             .context("xray_start_timeout")??;
         let proxy = format!("http://127.0.0.1:{port}");
-        // Ordinary profile checks have priority; opt-in scenarios cannot starve egress.
+        // Start each balancer candidate and its route independently. Sequential
+        // egress/domain checks must not exhaust the budget before they start.
+        // Configuration bounds this to at most 4 routes + 32 candidates/profile.
+        let mut balancing: Vec<BalancerAttempt> = balancers
+            .iter()
+            .map(|case| BalancerAttempt {
+                route_http: None,
+                candidate_http: vec![None; case.candidates.len()],
+            })
+            .collect();
+        let mut balancer_tasks = JoinSet::new();
+        for (case_index, (case, static_result)) in balancers.iter().zip(&inspected).enumerate() {
+            if static_result.status != Status::Ok {
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                continue;
+            }
+            let url = case.url.clone();
+            let route_proxy = proxy.clone();
+            spawn_balancer_probe(&mut balancer_tasks, case_index, None, deadline, async move {
+                probe::probe_https(&url, &route_proxy, remaining).await
+            });
+            for (candidate_index, tag) in case.candidates.iter().enumerate() {
+                let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag)
+                else {
+                    continue;
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    continue;
+                }
+                let url = case.url.clone();
+                let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
+                spawn_balancer_probe(
+                    &mut balancer_tasks,
+                    case_index,
+                    Some(candidate_index),
+                    deadline,
+                    async move { probe::probe_https(&url, &candidate_proxy, remaining).await },
+                );
+            }
+        }
+        // Egress keeps its original status semantics; it does not block
+        // execution of already-started balancer probes.
         let mut egress = Vec::with_capacity(endpoints.len());
         for (endpoint, direct) in endpoints {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -231,51 +278,17 @@ pub async fn check(
             attempts.push(Ok(response.unwrap_or(false)));
         }
 
-        // Run optional balancer probes after existing egress and domain checks.
-        // A timed-out request is UNKNOWN, not evidence of a dead candidate.
-        let mut balancing = Vec::with_capacity(balancers.len());
-        for (case, static_result) in balancers.iter().zip(&inspected) {
-            if static_result.status != Status::Ok {
-                balancing.push(BalancerAttempt {
-                    route_http: None,
-                    candidate_http: Vec::new(),
-                });
+        // All probes have the same hard deadline. A blocked candidate cannot
+        // prevent siblings from completing and returning their own evidence.
+        while let Some(joined) = balancer_tasks.join_next().await {
+            let Ok((case_index, candidate_index, result)) = joined else {
                 continue;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let route_http = if remaining.is_zero() {
-                None
-            } else {
-                timeout_at(deadline, probe::probe_https(&case.url, &proxy, remaining))
-                    .await
-                    .ok()
             };
-            let mut candidate_http = Vec::with_capacity(case.candidates.len());
-            for tag in &case.candidates {
-                let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag)
-                else {
-                    candidate_http.push(None);
-                    continue;
-                };
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    candidate_http.push(None);
-                    continue;
-                }
-                let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
-                candidate_http.push(
-                    timeout_at(
-                        deadline,
-                        probe::probe_https(&case.url, &candidate_proxy, remaining),
-                    )
-                    .await
-                    .ok(),
-                );
+            if let Some(index) = candidate_index {
+                balancing[case_index].candidate_http[index] = result;
+            } else {
+                balancing[case_index].route_http = result;
             }
-            balancing.push(BalancerAttempt {
-                route_http,
-                candidate_http,
-            });
         }
         Ok((egress, attempts, balancing))
     }
@@ -386,6 +399,26 @@ pub async fn check(
             balancers,
         }
     })
+}
+
+// Preserve UNKNOWN when an individual request runs out of time, rather than
+// converting a timeout into a confirmed HTTPS failure.
+fn spawn_balancer_probe<F>(
+    tasks: &mut JoinSet<(usize, Option<usize>, Option<bool>)>,
+    case_index: usize,
+    candidate_index: Option<usize>,
+    deadline: Instant,
+    probe: F,
+) where
+    F: Future<Output = bool> + Send + 'static,
+{
+    tasks.spawn(async move {
+        (
+            case_index,
+            candidate_index,
+            timeout_at(deadline, probe).await.ok(),
+        )
+    });
 }
 
 /// Test-only inbounds force each candidate without changing routing decisions
@@ -521,6 +554,25 @@ mod tests {
         );
         managed.stop().await;
         assert!(managed.finished);
+    }
+
+    #[tokio::test]
+    async fn slow_candidate_does_not_starve_another_candidate() {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut tasks = JoinSet::new();
+        spawn_balancer_probe(&mut tasks, 0, Some(0), deadline, async {
+            sleep(Duration::from_secs(2)).await;
+            true
+        });
+        spawn_balancer_probe(&mut tasks, 0, Some(1), deadline, async { true });
+        let fast = tokio::time::timeout(Duration::from_millis(300), tasks.join_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(fast, (0, Some(1), Some(true)));
+        let stalled = tasks.join_next().await.unwrap().unwrap();
+        assert_eq!(stalled, (0, Some(0), None));
     }
 
     #[test]

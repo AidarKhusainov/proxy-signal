@@ -29,8 +29,8 @@ JSON
 
 docker build -t proxy-signal:smoke .
 set +e
-output=$(docker run --rm --read-only --user 65532:65532 \
-    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 384m \
+output=$(timeout 120s docker run --rm --read-only --user 65532:65532 \
+    --cap-drop ALL --security-opt no-new-privileges --cpus 1 --pids-limit 64 --memory 384m \
     --tmpfs /tmp:rw,nosuid,noexec,size=16m,uid=65532,gid=65532,mode=0700 \
     --tmpfs /data:rw,nosuid,noexec,size=4m,uid=65532,gid=65532,mode=0700 \
     --mount "type=bind,src=$tmp/config.yaml,dst=/etc/proxy-signal/config.yaml,readonly" \
@@ -105,8 +105,8 @@ cat > "$tmp/routes.json" <<'JSON'
 JSON
 
 set +e
-output=$(docker run --rm --read-only --user 65532:65532 \
-    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 384m \
+output=$(timeout 120s docker run --rm --read-only --user 65532:65532 \
+    --cap-drop ALL --security-opt no-new-privileges --cpus 1 --pids-limit 64 --memory 384m \
     --tmpfs /tmp:rw,nosuid,noexec,size=16m,uid=65532,gid=65532,mode=0700 \
     --tmpfs /data:rw,nosuid,noexec,size=4m,uid=65532,gid=65532,mode=0700 \
     --mount "type=bind,src=$tmp/scenarios.yaml,dst=/etc/proxy-signal/config.yaml,readonly" \
@@ -181,8 +181,8 @@ cat > "$tmp/balancers.json" <<'JSON'
 JSON
 
 set +e
-output=$(docker run --rm --read-only --user 65532:65532 \
-    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 384m \
+output=$(timeout 120s docker run --rm --read-only --user 65532:65532 \
+    --cap-drop ALL --security-opt no-new-privileges --cpus 1 --pids-limit 64 --memory 384m \
     --tmpfs /tmp:rw,nosuid,noexec,size=16m,uid=65532,gid=65532,mode=0700 \
     --tmpfs /data:rw,nosuid,noexec,size=4m,uid=65532,gid=65532,mode=0700 \
     --mount "type=bind,src=$tmp/balancers.yaml,dst=/etc/proxy-signal/config.yaml,readonly" \
@@ -197,8 +197,8 @@ if [ "$result" -eq 0 ]; then
 fi
 for evidence in \
     'target=balancer/balancers/latency/config status=OK evidence=balancer_config_valid' \
-    'target=balancer/balancers/latency/candidate/node-good status=OK evidence=candidate_https_verified' \
-    'target=balancer/balancers/latency/candidate/node-broken status=FAILED evidence=candidate_https_failed' \
+    'target=balancer/balancers/latency/candidate/0 status=OK evidence=candidate_https_verified' \
+    'target=balancer/balancers/latency/candidate/1 status=FAILED evidence=candidate_https_failed' \
     'target=balancer/balancers/latency/candidates status=DEGRADED evidence=candidates_partially_failed' \
     'target=balancer/balancers/latency status=DEGRADED evidence=balancer_partial_candidates'
 do
@@ -208,8 +208,7 @@ do
     esac
 done
 case "$output" in
-    *'target=balancer/balancers/latency/route status=OK'*) 
-        echo 'FAIL: leastPing selection was asserted without observatory telemetry' >&2
-        exit 1 ;;
+    *'target=balancer/balancers/latency/route status=UNKNOWN'*) ;;
+    *) echo 'FAIL: leastPing selection must remain UNKNOWN without policy evidence' >&2; exit 1 ;;
 esac
 echo 'PASS: real Xray detected partial candidate failure without leastPing false OK'
