@@ -13,6 +13,16 @@ pub struct EndpointChecks {
     pub overall: Observation,
 }
 
+pub fn unavailable_endpoint() -> EndpointChecks {
+    let missing = Observation::new(Status::Unknown, "cdn_endpoint_task_error");
+    EndpointChecks {
+        dns: missing,
+        tls: missing,
+        http: missing,
+        overall: missing,
+    }
+}
+
 fn unavailable(status: Status, code: &'static str) -> Observation {
     Observation::new(status, code)
 }
@@ -105,7 +115,7 @@ pub fn inspect(profile: &Value, case: &CdnScenario) -> Observation {
     };
     let selected: Vec<_> = outbounds
         .iter()
-        .filter(|o| o.get("tag").and_then(Value::as_str) == Some(&case.outbound_tag))
+        .filter(|o| o.get("tag").and_then(Value::as_str) == Some(case.outbound_tag.as_str()))
         .collect();
     if selected.len() != 1 {
         return unavailable(Status::Unsupported, "cdn_outbound_not_unique");
@@ -180,12 +190,12 @@ fn attributable(profile: &Value, case: &CdnScenario) -> bool {
         return false;
     };
     rule.get("type").and_then(Value::as_str) == Some("field")
-        && rule.get("outboundTag").and_then(Value::as_str) == Some(&case.outbound_tag)
+        && rule.get("outboundTag").and_then(Value::as_str) == Some(case.outbound_tag.as_str())
         && rule.as_object().is_some_and(|obj| {
             obj.keys().all(|key| matches!(key.as_str(), "type" | "domain" | "outboundTag" | "ruleTag"))
         })
         && rule.get("domain").and_then(Value::as_array).is_some_and(|domains| {
-            domains.len() == 1 && domains[0].as_str() == Some(&format!("full:{host}"))
+            domains.len() == 1 && domains[0].as_str().is_some_and(|domain| domain == format!("full:{host}"))
         })
 }
 
