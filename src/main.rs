@@ -529,6 +529,14 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
+                if key.matches('/').count() == 2 {
+                    // Exit IP is not proof of the chosen route. The optional
+                    // scenario/balancer checks provide any narrower route evidence.
+                    results.push((
+                        format!("{key}/route"),
+                        Observation::new(Status::Unknown, "profile_route_unverified"),
+                    ));
+                }
                 results.push((key, observation));
                 results.extend(scenarios);
                 results.extend(balancers);
@@ -572,6 +580,10 @@ fn unavailable_profile(results: &mut Vec<ResultRow>, entry: &Source, code: &'sta
     ));
     unavailable_checks(results, entry, code);
     if entry.id().contains('/') {
+        results.push((
+            format!("profile/{}/route", entry.id()),
+            Observation::new(Status::Unknown, code),
+        ));
         results.push((
             format!("profile/{}/client", entry.id()),
             Observation::new(Status::Unknown, "client_inbound_unverified"),
