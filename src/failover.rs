@@ -43,20 +43,36 @@ pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
     if xray::prepare(profile.clone(), 20999).is_err() {
         return Observation::new(Status::Unsupported, "failover_profile_incompatible");
     }
-    let Some(primary) = profile.get("outbounds").and_then(Value::as_array)
-        .and_then(|items| items.iter().find(|o| o.get("tag").and_then(Value::as_str) == Some(case.primary_tag.as_str()))) else {
+    let Some(primary) = profile
+        .get("outbounds")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|o| o.get("tag").and_then(Value::as_str) == Some(case.primary_tag.as_str()))
+        })
+    else {
         return Observation::new(Status::Unsupported, "failover_primary_missing");
     };
-    let servers = primary.pointer("/settings/servers").and_then(Value::as_array);
+    let servers = primary
+        .pointer("/settings/servers")
+        .and_then(Value::as_array);
     let safe = primary.get("protocol").and_then(Value::as_str) == Some("socks")
-        && servers.is_some_and(|s| s.len() == 1
-            && s[0].get("address").and_then(Value::as_str) == Some("127.0.0.1")
-            && s[0].get("port").and_then(Value::as_u64) == Some(u64::from(case.control_port))
-            && s[0].get("users").is_none())
-        && primary.pointer("/streamSettings/sockopt/dialerProxy").is_none()
+        && servers.is_some_and(|s| {
+            s.len() == 1
+                && s[0].get("address").and_then(Value::as_str) == Some("127.0.0.1")
+                && s[0].get("port").and_then(Value::as_u64) == Some(u64::from(case.control_port))
+                && s[0].get("users").is_none()
+        })
+        && primary
+            .pointer("/streamSettings/sockopt/dialerProxy")
+            .is_none()
         && primary.get("proxySettings").is_none();
     if !safe {
-        return Observation::new(Status::Unsupported, "failover_requires_local_controlled_socks");
+        return Observation::new(
+            Status::Unsupported,
+            "failover_requires_local_controlled_socks",
+        );
     }
     let Some(outbounds) = profile.get("outbounds").and_then(Value::as_array) else {
         return Observation::new(Status::Unsupported, "failover_outbounds_missing");
@@ -483,14 +499,14 @@ mod tests {
     }
     #[test]
     fn no_false_ok_on_missing_evidence_or_recovery() {
-        let ok=Observation::new(Status::Ok,"ok");
-        let u=Observation::new(Status::Unknown,"unknown");
-        let bad=Observation::new(Status::Failed,"failed");
-        assert_eq!(overall(ok,ok,ok,u,ok,true).status,Status::Unknown);
-        assert_eq!(overall(ok,ok,ok,bad,ok,true).status,Status::Failed);
-        assert_eq!(overall(ok,ok,ok,ok,bad,true).status,Status::Degraded);
-        assert_eq!(overall(ok,ok,ok,ok,u,true).status,Status::Unknown);
-        assert_eq!(overall(ok,ok,ok,ok,ok,true).status,Status::Ok);
+        let ok = Observation::new(Status::Ok, "ok");
+        let u = Observation::new(Status::Unknown, "unknown");
+        let bad = Observation::new(Status::Failed, "failed");
+        assert_eq!(overall(ok, ok, ok, u, ok, true).status, Status::Unknown);
+        assert_eq!(overall(ok, ok, ok, bad, ok, true).status, Status::Failed);
+        assert_eq!(overall(ok, ok, ok, ok, bad, true).status, Status::Degraded);
+        assert_eq!(overall(ok, ok, ok, ok, u, true).status, Status::Unknown);
+        assert_eq!(overall(ok, ok, ok, ok, ok, true).status, Status::Ok);
     }
     #[tokio::test]
     async fn occupied_control_port_cannot_be_modified() {
