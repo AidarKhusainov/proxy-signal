@@ -229,13 +229,23 @@ pub fn tunnel(
     http_ok: Option<bool>,
     access: Option<&str>,
 ) -> Observation {
+    tunnel_for_inbound(profile, case, http_ok, access, "proxy-signal-probe-in")
+}
+
+pub fn tunnel_for_inbound(
+    profile: &Value,
+    case: &CdnScenario,
+    http_ok: Option<bool>,
+    access: Option<&str>,
+    inbound_tag: &str,
+) -> Observation {
     if !attributable(profile, case) {
         return unavailable(Status::Unknown, "cdn_tunnel_route_not_attributable");
     }
     let (Some(http_ok), Some(access)) = (http_ok, access) else {
         return unavailable(Status::Unknown, "cdn_tunnel_unobserved");
     };
-    match scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access) {
+    match scenario::observed_outbound(&case.url, inbound_tag, access) {
         Ok(tag) if tag != case.outbound_tag => {
             unavailable(Status::Failed, "cdn_unexpected_outbound")
         }
