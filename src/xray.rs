@@ -239,9 +239,6 @@ struct BalancerAttempt {
     candidate_http: Vec<Option<bool>>,
 }
 
-// Explicit small scenario lists keep the full-profile executor simple.
-// Avoid a new options layer for this single call site.
-#[allow(clippy::too_many_arguments)]
 /// A fresh leastPing balancer can temporarily have no observatory results.
 /// Without an independently observed choice a failed startup request does not
 /// prove a stable VPN outage. Keep the original routing unchanged.
@@ -257,6 +254,9 @@ fn needs_least_ping_settling(profile: &Value) -> bool {
             })
 }
 
+// Explicit small scenario lists keep the full-profile executor simple.
+// Avoid a new options layer for this single call site.
+#[allow(clippy::too_many_arguments)]
 pub async fn check(
     config: Value,
     endpoints: &[(Endpoint, Option<IpAddr>)],
