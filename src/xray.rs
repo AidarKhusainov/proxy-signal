@@ -85,6 +85,18 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     Ok(config)
 }
 
+/// Client inbound semantics are not validated by a diagnostic HTTP proxy.
+pub(crate) fn has_enabled_sniffing(config: &Value) -> bool {
+    config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .is_some_and(|inbounds| {
+            inbounds.iter().any(|inbound| {
+                inbound.pointer("/sniffing/enabled") == Some(&Value::Bool(true))
+            })
+        })
+}
+
 /// Preserve the exact sniffing object, including exclusions. Xray itself
 /// interprets domain/IP rules; we do not approximate those rules in Rust.
 fn diagnostic_sniffing(inbounds: Option<&Value>) -> Result<Option<Value>> {
@@ -931,6 +943,7 @@ mod tests {
             ],
             "observatory": {"subjectSelector": ["vpn"]}
         });
+        assert!(has_enabled_sniffing(&original));
         let prepared = prepare(original.clone(), 19123).unwrap();
         for key in ["dns", "routing", "outbounds", "observatory"] {
             assert_eq!(prepared[key], original[key]);
