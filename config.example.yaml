@@ -36,6 +36,14 @@ sources:
     #   - id: multi-hop
     #     url: https://example.net/
     #     outbounds: [entry, relay, exit]  # exact outbound tags in dialer order
+    # Optional CDN/XHTTP probe; endpoint status is independent from HTTPS
+    # through the configured VPN outbound, and CDN route stays UNKNOWN.
+    # cdn:
+    #   - id: edge
+    #     endpoint_url: https://cdn.example.org/health
+    #     expected_http_status: 404
+    #     url: https://example.com/
+    #     outbound_tag: vpn-xhttp
   # - id: authenticated-profile
   #   kind: https
   #   url: https://subscription.example.org/config.json

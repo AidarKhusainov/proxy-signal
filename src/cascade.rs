@@ -145,12 +145,17 @@ pub fn overall(config: Observation, https: Observation, hops: Observation) -> Ob
     if config.status != Status::Ok {
         return config;
     }
-    if https.status == Status::Failed || hops.status == Status::Failed {
-        Observation::new(Status::Failed, "cascade_connection_failed")
+    if https.status == Status::Failed {
+        Observation::new(Status::Failed, "cascade_https_failed")
+    } else if hops.status == Status::Failed {
+        Observation::new(Status::Failed, "cascade_hops_failed")
     } else if https.status == Status::Ok && hops.status == Status::Ok {
         Observation::new(Status::Ok, "cascade_verified")
     } else if https.status == Status::Degraded || hops.status == Status::Degraded {
         Observation::new(Status::Degraded, "cascade_partial_hops")
+    } else if https.status == Status::Ok && hops.status == Status::Unknown {
+        // HTTPS recovery is proven, but intermediate traversal remains unverified.
+        Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified")
     } else {
         Observation::new(Status::Unknown, "cascade_incomplete_evidence")
     }
@@ -265,6 +270,20 @@ mod tests {
             Status::Failed
         );
         assert_eq!(https(&json, &case, None, Some(log)).status, Status::Unknown);
+    }
+
+    #[test]
+    fn confirmed_https_recovery_does_not_claim_hops_or_clear_hop_failure() {
+        let ok = Observation::new(Status::Ok, "verified");
+        let failed = Observation::new(Status::Failed, "failed");
+        let unknown = hops();
+        assert_eq!(overall(ok, failed, unknown).code, "cascade_https_failed");
+        assert_eq!(
+            overall(ok, ok, unknown).code,
+            "cascade_https_healthy_hops_unverified"
+        );
+        assert_eq!(overall(ok, ok, failed).code, "cascade_hops_failed");
+        assert_ne!(overall(ok, ok, unknown).status, Status::Ok);
     }
 
     #[test]
