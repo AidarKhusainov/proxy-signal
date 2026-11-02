@@ -35,9 +35,21 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     {
         bail!("unsafe_or_unsupported_listener");
     }
-    // One loopback inbound cannot faithfully represent several different
-    // inbound sniffing policies. Refuse that ambiguity instead of picking one.
+    // Match the first original inbound's tag, so unchanged inboundTag rules
+    // retain their meaning for this *one* diagnostic path. Other original
+    // inbounds are never launched and remain outside verified client coverage.
     let sniffing = diagnostic_sniffing(object.get("inbounds"))?;
+    let diagnostic_tag = object
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .and_then(|inbounds| inbounds.first())
+        .and_then(|inbound| inbound.get("tag"))
+        .and_then(Value::as_str)
+        .unwrap_or("proxy-signal-probe-in")
+        .to_owned();
+    if diagnostic_tag.is_empty() {
+        bail!("invalid_diagnostic_inbound_tag");
+    }
     if let Some(routing) = object.get("routing") {
         let routing = routing.as_object().context("invalid_routing")?;
         if let Some(rules) = routing.get("rules") {
@@ -46,11 +58,30 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
                 if !rule.is_object() {
                     bail!("invalid_routing_rule");
                 }
-                if ["inboundTag", "source", "user", "protocol", "attrs"]
+                // source/user/attrs depend on client identity or its network
+                // origin; a local HTTP probe cannot reproduce those fields.
+                if ["source", "user", "attrs"]
                     .iter()
                     .any(|k| rule.get(k).is_some())
                 {
                     bail!("inbound_dependent_routing");
+                }
+                // inboundTag is safe for one selected original inbound when we
+                // preserve its tag. The other inbound paths remain unverified.
+                if let Some(tags) = rule.get("inboundTag") {
+                    if object
+                        .get("inbounds")
+                        .and_then(Value::as_array)
+                        .and_then(|inbounds| inbounds.first())
+                        .and_then(|inbound| inbound.get("tag"))
+                        .and_then(Value::as_str)
+                        .is_none()
+                        || tags
+                            .as_array()
+                            .is_none_or(|values| !values.iter().all(Value::is_string))
+                    {
+                        bail!("unsupported_inbound_tag_routing");
+                    }
                 }
             }
         }
@@ -71,7 +102,7 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     }
     // Old inbounds cannot be started: they might expose authentication endpoints or bind host ports.
     let mut inbound = json!({
-        "tag": "proxy-signal-probe-in",
+        "tag": diagnostic_tag,
         "listen": "127.0.0.1",
         "port": port,
         "protocol": "http",
@@ -83,6 +114,18 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     object.insert("inbounds".into(), Value::Array(vec![inbound]));
     object.insert("log".into(), json!({"loglevel": "none"}));
     Ok(config)
+}
+
+/// Only the first original inbound's policy is exercised. No tag is logged.
+pub(crate) fn diagnostic_inbound_tag(config: &Value) -> &str {
+    config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .and_then(|inbounds| inbounds.first())
+        .and_then(|inbound| inbound.get("tag"))
+        .and_then(Value::as_str)
+        .filter(|tag| !tag.is_empty())
+        .unwrap_or("proxy-signal-probe-in")
 }
 
 /// Client inbound semantics are not validated by a diagnostic HTTP proxy.
@@ -213,6 +256,7 @@ pub async fn check(
     let port = socket.local_addr()?.port();
     drop(socket);
     let original = config.clone();
+    let inbound_tag = diagnostic_inbound_tag(&original).to_owned();
     let mut config = prepare(config, port)?;
     let inspected: Vec<_> = balancers
         .iter()
@@ -461,7 +505,7 @@ pub async fn check(
                 Err(observation) => observation,
                 Ok(http_ok) => match &logs {
                     Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
-                        scenario::evaluate(case, http_ok, access, error.as_deref().unwrap_or(""))
+                        scenario::evaluate_for_inbound(case, http_ok, access, error.as_deref().unwrap_or(""), &inbound_tag)
                     }
                     _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
                 },
@@ -511,11 +555,12 @@ pub async fn check(
                     .collect::<Vec<_>>();
                 let candidate_details = candidates;
                 let candidates = balancer::candidate_status(&candidate_details);
-                let route = balancer::route(
+                let route = balancer::route_for_inbound(
                     case,
                     balancer::attributable(&original, case),
                     attempt.route_http,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                    &inbound_tag,
                 );
                 // Report only an index into the configured candidate list:
                 // outbound tags themselves may contain operator-sensitive labels.
@@ -523,7 +568,7 @@ pub async fn check(
                     logs.as_ref()
                         .and_then(|(access, _)| access.as_deref())
                         .and_then(|access| {
-                            scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access)
+                            scenario::observed_outbound(&case.url, &inbound_tag, access)
                                 .ok()
                         })
                         .and_then(|tag| {
@@ -560,11 +605,12 @@ pub async fn check(
                         overall: config,
                     };
                 }
-                let https = cascade::https(
+                let https = cascade::https_for_inbound(
                     &original,
                     case,
                     http_ok,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                    &inbound_tag,
                 );
                 let hops = cascade::hops();
                 let overall = cascade::overall(config, https, hops);
@@ -590,11 +636,12 @@ pub async fn check(
                 }
                 CdnChecks {
                     config,
-                    tunnel: cdn::tunnel(
+                    tunnel: cdn::tunnel_for_inbound(
                         &original,
                         case,
                         http_ok,
                         logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                        &inbound_tag,
                     ),
                     route: cdn::route(),
                 }
@@ -1040,6 +1087,35 @@ mod tests {
             scenario::evaluate(&case, true, correct, "").status,
             Status::Ok
         );
+    }
+
+    #[test]
+    fn retains_inbound_tag_rules_and_first_original_tag() {
+        let original = json!({
+            "inbounds": [
+                {"tag":"socks-client", "protocol":"socks", "port":1080, "listen":"0.0.0.0",
+                 "sniffing":{"enabled":true,"destOverride":["http","tls"]}},
+                {"tag":"http-client", "protocol":"http", "port":8080, "listen":"0.0.0.0",
+                 "sniffing":{"enabled":true,"destOverride":["http","tls"]}}
+            ],
+            "routing":{"rules":[
+                {"type":"field","inboundTag":["socks-client"],"outboundTag":"vpn"},
+                {"type":"field","inboundTag":["http-client"],"outboundTag":"direct"},
+                {"type":"field","protocol":["bittorrent"],"outboundTag":"blocked"}
+            ]},
+            "outbounds":[
+                {"tag":"vpn","protocol":"vless"},
+                {"tag":"direct","protocol":"freedom"},
+                {"tag":"blocked","protocol":"blackhole"}
+            ]
+        });
+        assert_eq!(diagnostic_inbound_tag(&original), "socks-client");
+        let prepared = prepare(original.clone(), 19001).unwrap();
+        assert_eq!(prepared["routing"], original["routing"]);
+        assert_eq!(prepared["inbounds"][0]["tag"], "socks-client");
+        assert_eq!(prepared["inbounds"][0]["listen"], "127.0.0.1");
+        assert_eq!(prepared["inbounds"][0]["port"], 19001);
+        assert_eq!(prepared["inbounds"].as_array().unwrap().len(), 1);
     }
 
     #[test]
