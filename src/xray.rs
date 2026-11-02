@@ -652,12 +652,18 @@ pub(crate) fn spawn_xray(path: &Path) -> Result<ManagedChild> {
 /// Xray process group, not just its immediate child. Tokio reaps the child.
 pub(crate) struct ManagedChild {
     pub(crate) child: Child,
+    #[cfg(unix)]
+    process_group: Option<nix::unistd::Pid>,
     finished: bool,
 }
 
 impl ManagedChild {
     fn new(child: Child) -> Self {
         Self {
+            // Child::id disappears after wait/try_wait reaps the leader, but
+            // its process group may still contain descendants that we own.
+            #[cfg(unix)]
+            process_group: child.id().map(|pid| nix::unistd::Pid::from_raw(pid as i32)),
             child,
             finished: false,
         }
@@ -665,17 +671,17 @@ impl ManagedChild {
 
     fn kill_group(&mut self) {
         #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            use nix::{
-                sys::signal::{killpg, Signal},
-                unistd::Pid,
-            };
-            let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        if let Some(group) = self.process_group {
+            use nix::sys::signal::{killpg, Signal};
+            let _ = killpg(group, Signal::SIGKILL);
         }
         let _ = self.child.start_kill();
     }
 
     pub(crate) async fn stop(&mut self) {
+        if self.finished {
+            return;
+        }
         self.kill_group();
         self.finished = matches!(
             tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await,
@@ -695,6 +701,103 @@ impl Drop for ManagedChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(") ")
+                    .map(|(_, tail)| tail.starts_with('Z'))
+            })
+            .is_some_and(|zombie| !zombie)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stops_descendants_after_the_group_leader_has_exited() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let child_pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & echo $! > \"$1\"")
+            .arg("test-descendant")
+            .arg(&child_pid_file)
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        let mut managed = ManagedChild::new(command.spawn().unwrap());
+        tokio::time::timeout(Duration::from_secs(2), managed.child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        let descendant: u32 = std::fs::read_to_string(child_pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(process_is_running(descendant));
+        managed.stop().await;
+        let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+            while process_is_running(descendant) {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Keep the failing regression itself from leaking its fixture process.
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(descendant as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        assert!(stopped.is_ok(), "supervised descendant outlived its leader");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn repeated_cancelled_children_are_killed_and_reaped() {
+        use std::os::unix::process::CommandExt;
+
+        for _ in 0..5 {
+            let mut command = Command::new("sleep");
+            command.arg("30").kill_on_drop(true);
+            command.as_std_mut().process_group(0);
+            let managed = ManagedChild::new(command.spawn().unwrap());
+            let pid = managed.child.id().unwrap();
+            drop(managed);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancelled child was not reaped");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn repeated_stop_never_signals_a_reused_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("sleep");
+        command.arg("30").kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        let mut first = ManagedChild::new(command.spawn().unwrap());
+        first.stop().await;
+        let mut unrelated = ManagedChild::new(command.spawn().unwrap());
+        // Simulate the kernel reusing a reaped leader's old group identifier.
+        first.process_group = unrelated.process_group;
+        first.stop().await;
+        sleep(Duration::from_millis(20)).await;
+        let still_running = unrelated.child.try_wait().unwrap().is_none();
+        unrelated.stop().await;
+        assert!(
+            still_running,
+            "a completed supervisor signalled another group"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
