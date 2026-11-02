@@ -92,6 +92,7 @@ mod tests {
             path: path.clone(),
             expected_exit_ips: Vec::<IpAddr>::new(),
             scenarios: Vec::new(),
+            balancers: Vec::new(),
         };
         std::fs::write(&path, vec![b' '; MAX_PROFILE + 1]).unwrap();
         assert!(load(&source, Duration::from_secs(5)).await.is_err());
