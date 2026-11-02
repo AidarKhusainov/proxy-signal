@@ -66,6 +66,23 @@ pub struct CdnScenario {
     pub outbound_tag: String,
 }
 
+/// Controlled lab-only failover. The primary must be a local SOCKS outbound
+/// owned by the trial. No remote endpoint is impaired.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailoverScenario {
+    pub id: String,
+    pub url: String,
+    pub balancer_tag: String,
+    pub primary_tag: String,
+    pub alternatives: Vec<String>,
+    #[serde(default)]
+    pub fallback_tag: Option<String>,
+    pub control_port: u16,
+    #[serde(default)]
+    pub restore_primary: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BalancerStrategy {
@@ -125,6 +142,8 @@ pub enum Source {
         cascades: Vec<CascadeScenario>,
         #[serde(default)]
         cdn: Vec<CdnScenario>,
+        #[serde(default)]
+        failover: Vec<FailoverScenario>,
     },
     Https {
         id: String,
@@ -141,6 +160,8 @@ pub enum Source {
         cascades: Vec<CascadeScenario>,
         #[serde(default)]
         cdn: Vec<CdnScenario>,
+        #[serde(default)]
+        failover: Vec<FailoverScenario>,
     },
 }
 
@@ -168,6 +189,11 @@ impl Source {
     pub fn cdn(&self) -> &[CdnScenario] {
         match self {
             Self::File { cdn, .. } | Self::Https { cdn, .. } => cdn,
+        }
+    }
+    pub fn failover(&self) -> &[FailoverScenario] {
+        match self {
+            Self::File { failover, .. } | Self::Https { failover, .. } => failover,
         }
     }
     pub fn expected_exit_ips(&self) -> &[IpAddr] {
@@ -227,6 +253,8 @@ impl Config {
         let mut total_balancers = 0;
         let mut total_cascades = 0;
         let mut total_cdn = 0;
+        let mut total_failover = 0;
+        let mut controlled_ports = HashSet::new();
         for source in &self.sources {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
@@ -401,6 +429,51 @@ impl Config {
                     bail!("CDN tunnel destination overlaps egress endpoint");
                 }
             }
+            total_failover += source.failover().len();
+            if source.failover().len() > 2 || total_failover > 4 {
+                bail!("too many controlled failover scenarios");
+            }
+            for case in source.failover() {
+                if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
+                    bail!("invalid or duplicate failover scenario id");
+                }
+                let url = validate_https(&case.url)?;
+                let destination = (
+                    url.host_str().unwrap_or("").to_owned(),
+                    url.port_or_known_default(),
+                );
+                if !destinations.insert(destination.clone())
+                    || self.endpoints.iter().any(|e| {
+                        validate_https(&e.url).is_ok_and(|other| {
+                            (
+                                other.host_str().unwrap_or("").to_owned(),
+                                other.port_or_known_default(),
+                            ) == destination
+                        })
+                    })
+                {
+                    bail!("failover destination overlaps existing check");
+                }
+                if !valid_tag(&case.balancer_tag)
+                    || !valid_tag(&case.primary_tag)
+                    || case.alternatives.is_empty()
+                    || case.alternatives.len() > 4
+                    || case
+                        .alternatives
+                        .iter()
+                        .any(|tag| !valid_tag(tag) || tag == &case.primary_tag)
+                    || case.alternatives.iter().collect::<HashSet<_>>().len()
+                        != case.alternatives.len()
+                    || case
+                        .fallback_tag
+                        .as_ref()
+                        .is_some_and(|tag| !case.alternatives.contains(tag))
+                    || case.control_port < 1024
+                    || !controlled_ports.insert(case.control_port)
+                {
+                    bail!("invalid controlled failover expectation");
+                }
+            }
             if distinct_candidates.len() > 8 {
                 bail!("too many distinct balancer candidates");
             }
@@ -532,6 +605,7 @@ mod tests {
         assert!(old.balancers().is_empty());
         assert!(old.cascades().is_empty());
         assert!(old.cdn().is_empty());
+        assert!(old.failover().is_empty());
         let example = "kind: file\nid: node\npath: /tmp/profile.json\nscenarios:\n  - id: dns-direct\n    url: https://example.org/\n    route: direct\n    outbound_tag: direct\n    dns:\n      server: UDP:1.1.1.1:53\n      expected_ips: [93.184.215.14]\n";
         let new: Source = serde_yaml::from_str(example).unwrap();
         assert_eq!(new.scenarios().len(), 1);
@@ -571,6 +645,18 @@ mod tests {
         .is_ok());
         assert!(serde_yaml::from_str::<Source>(
             &yaml.replace("outbound_tag: vpn", "unknown_field: vpn")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn controlled_failover_is_optional_and_strict() {
+        let sample = "kind: file\nid: node\npath: /tmp/profile.json\nfailover:\n  - id: lab\n    url: https://example.org/\n    balancer_tag: pool\n    primary_tag: main\n    alternatives: [backup]\n    fallback_tag: backup\n    control_port: 20001\n    restore_primary: true\n";
+        let parsed: Source = serde_yaml::from_str(sample).unwrap();
+        assert_eq!(parsed.failover().len(), 1);
+        assert!(parsed.failover()[0].restore_primary);
+        assert!(serde_yaml::from_str::<Source>(
+            &sample.replace("control_port:", "remote_control_port:")
         )
         .is_err());
     }

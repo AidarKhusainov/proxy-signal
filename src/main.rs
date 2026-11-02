@@ -2,6 +2,7 @@ mod balancer;
 mod cascade;
 mod cdn;
 mod config;
+mod failover;
 mod incident;
 mod probe;
 mod scenario;
@@ -428,12 +429,32 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     balance_checks,
                     cascade_checks,
                     cdn_checks,
+                    {
+                        let mut checks = Vec::new();
+                        for case in entry.failover() {
+                            let evidence = failover::check(document.clone(), case, timeout).await;
+                            let key = format!("failover/{}/{}", entry.id(), case.id);
+                            checks.extend([
+                                (format!("{key}/config"), evidence.config),
+                                (format!("{key}/primary"), evidence.primary),
+                                (format!("{key}/backup"), evidence.backup),
+                                (format!("{key}/switch"), evidence.switch),
+                            ]);
+                            if case.restore_primary {
+                                checks.push((format!("{key}/recovery"), evidence.recovery));
+                            }
+                            checks.push((key, evidence.overall));
+                        }
+                        checks
+                    },
                 )
             });
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn)) = result {
+            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn, failover)) =
+                result
+            {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
                 results.push((key, observation));
@@ -441,6 +462,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                 results.extend(balancers);
                 results.extend(cascades);
                 results.extend(cdn);
+                results.extend(failover);
             } else {
                 eprintln!("ProxySignal: probe_task_error");
             }
@@ -484,6 +506,22 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
         ] {
             results.push((
                 format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        results.push((key, Observation::new(Status::Unknown, code)));
+    }
+    for case in entry.failover() {
+        let key = format!("failover/{}/{}", entry.id(), case.id);
+        for component in ["config", "primary", "backup", "switch"] {
+            results.push((
+                format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        if case.restore_primary {
+            results.push((
+                format!("{key}/recovery"),
                 Observation::new(Status::Unknown, code),
             ));
         }
