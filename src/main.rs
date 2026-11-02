@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn selected_profiles_have_independent_stable_incidents_across_restart_and_missing_update() {
-        let source: Source = serde_yaml::from_str("kind: https\\nid: subscription\\nurl: https://example.org/sub\\nprofiles:\\n  - { id: first, remarks: A }\\n  - { id: second, remarks: B }\\n").unwrap();
+        let source: Source = serde_yaml::from_str("kind: https\nid: subscription\nurl: https://example.org/sub\nprofiles:\n  - { id: first, remarks: A }\n  - { id: second, remarks: B }\n").unwrap();
         let doc_a = serde_json::json!({"remarks":"A","outbounds":[{"protocol":"vless"}]});
         let doc_b = serde_json::json!({"remarks":"B","outbounds":[{"protocol":"vless"}]});
         let selection =
