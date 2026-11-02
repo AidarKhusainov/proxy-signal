@@ -113,6 +113,7 @@ fn attributable(profile: &Value, case: &CascadeScenario) -> bool {
 }
 
 /// HTTPS and the first selected outbound are separate evidence from hop traversal.
+#[cfg(test)]
 pub fn https(
     profile: &Value,
     case: &CascadeScenario,
