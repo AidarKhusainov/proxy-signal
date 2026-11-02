@@ -63,6 +63,20 @@ sources:
   #     Authorization: /run/secrets/subscription-auth
   #     X-HWID: /run/secrets/hwid
   #   expected_exit_ips: []
+  # Or explicitly select complete JSON profiles from one HTTPS array:
+  # - id: happ
+  #   kind: https
+  #   url: https://subscription.example.org/monitoring.json
+  #   headers:
+  #     User-Agent: /run/secrets/happ-user-agent
+  #     Accept: /run/secrets/happ-accept
+  #     X-HWID: /run/secrets/happ-hwid
+  #   profiles:
+  #     - id: region-a
+  #       remarks: "Region A"
+  #     - id: region-b
+  #       remarks: "Region B"
+  #       expected_exit_ips: []
 # Telegram is optional. Uncomment to send state-change notifications.
 # telegram:
 #   bot_token_file: /run/secrets/telegram-token
