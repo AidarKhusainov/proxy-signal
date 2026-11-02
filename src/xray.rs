@@ -358,11 +358,14 @@ pub async fn check(
                     logs.as_ref()
                         .and_then(|(access, _)| access.as_deref())
                         .and_then(|access| {
-                            scenario::observed_outbound(
-                                &case.url, "proxy-signal-probe-in", access
-                            ).ok()
+                            scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access)
+                                .ok()
                         })
-                        .and_then(|tag| case.candidates.iter().position(|candidate| candidate == tag))
+                        .and_then(|tag| {
+                            case.candidates
+                                .iter()
+                                .position(|candidate| candidate == tag)
+                        })
                 } else {
                     None
                 };

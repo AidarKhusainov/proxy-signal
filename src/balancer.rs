@@ -327,10 +327,19 @@ mod tests {
         );
         let mut fallback = c.clone();
         fallback.fallback_tag = Some("node-a".into());
-        assert_eq!(route(&fallback, true, Some(true), Some(log)).status, Status::Unknown);
+        assert_eq!(
+            route(&fallback, true, Some(true), Some(log)).status,
+            Status::Unknown
+        );
         fallback.fallback_tag = Some("direct".into());
         assert_eq!(
-            route(&fallback, true, Some(true), Some(&log.replace("node-a", "direct"))).status,
+            route(
+                &fallback,
+                true,
+                Some(true),
+                Some(&log.replace("node-a", "direct"))
+            )
+            .status,
             Status::Unknown
         );
         let good = Observation::new(Status::Ok, "good");
