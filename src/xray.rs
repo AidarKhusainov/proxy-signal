@@ -122,7 +122,10 @@ pub async fn check(
     drop(socket);
     let original = config.clone();
     let mut config = prepare(config, port)?;
-    let inspected: Vec<_> = balancers.iter().map(|case| balancer::inspect(&original, case)).collect();
+    let inspected: Vec<_> = balancers
+        .iter()
+        .map(|case| balancer::inspect(&original, case))
+        .collect();
     // Each unique candidate is tested through a temporary inbound with a
     // dedicated routing rule. Original probe-in traffic never matches these
     // rules, so the balancer's normal route remains intact.
@@ -248,7 +251,8 @@ pub async fn check(
             };
             let mut candidate_http = Vec::with_capacity(case.candidates.len());
             for tag in &case.candidates {
-                let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag) else {
+                let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag)
+                else {
                     candidate_http.push(None);
                     continue;
                 };
@@ -259,9 +263,12 @@ pub async fn check(
                 }
                 let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
                 candidate_http.push(
-                    timeout_at(deadline, probe::probe_https(&case.url, &candidate_proxy, remaining))
-                        .await
-                        .ok(),
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&case.url, &candidate_proxy, remaining),
+                    )
+                    .await
+                    .ok(),
                 );
             }
             balancing.push(BalancerAttempt {
@@ -294,27 +301,42 @@ pub async fn check(
                 },
             })
             .collect();
-        let balancers = balancers.iter().zip(inspected).zip(balancing)
+        let balancers = balancers
+            .iter()
+            .zip(inspected)
+            .zip(balancing)
             .map(|((case, config), attempt)| {
                 if config.status != Status::Ok {
                     return BalancerChecks {
                         config,
-                        candidates: Observation::new(Status::Unsupported, "balancer_config_invalid"),
-                        candidate_details: case.candidates.iter()
-                            .map(|_| Observation::new(Status::Unsupported, "balancer_config_invalid"))
+                        candidates: Observation::new(
+                            Status::Unsupported,
+                            "balancer_config_invalid",
+                        ),
+                        candidate_details: case
+                            .candidates
+                            .iter()
+                            .map(|_| {
+                                Observation::new(Status::Unsupported, "balancer_config_invalid")
+                            })
                             .collect(),
                         route: Observation::new(Status::Unsupported, "balancer_config_invalid"),
                         overall: config,
                     };
                 }
-                let candidates = case.candidates.iter().zip(attempt.candidate_http.iter())
+                let candidates = case
+                    .candidates
+                    .iter()
+                    .zip(attempt.candidate_http.iter())
                     .map(|(tag, http_ok)| {
                         let inbound = diagnostics.iter().find(|(existing, _, _)| existing == tag);
                         match inbound {
                             Some((_, name, _)) => balancer::candidate(
                                 *http_ok,
                                 logs.as_ref().and_then(|(access, _)| access.as_deref()),
-                                &case.url, name, tag,
+                                &case.url,
+                                name,
+                                tag,
                             ),
                             None => Observation::new(Status::Unknown, "candidate_not_instrumented"),
                         }
@@ -323,14 +345,26 @@ pub async fn check(
                 let candidate_details = candidates;
                 let candidates = balancer::candidate_status(&candidate_details);
                 let route = balancer::route(
-                    case, balancer::attributable(&original, case), attempt.route_http,
+                    case,
+                    balancer::attributable(&original, case),
+                    attempt.route_http,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
                 );
                 let overall = balancer::overall(config, candidates, route);
-                BalancerChecks { config, candidates, candidate_details, route, overall }
+                BalancerChecks {
+                    config,
+                    candidates,
+                    candidate_details,
+                    route,
+                    overall,
+                }
             })
             .collect();
-        CheckResults { egress, scenarios, balancers }
+        CheckResults {
+            egress,
+            scenarios,
+            balancers,
+        }
     })
 }
 
@@ -340,7 +374,9 @@ fn install_candidate_diagnostics(
     config: &mut Value,
     candidates: &[(String, String, u16)],
 ) -> Result<()> {
-    let inbounds = config["inbounds"].as_array_mut().context("diagnostic_inbounds")?;
+    let inbounds = config["inbounds"]
+        .as_array_mut()
+        .context("diagnostic_inbounds")?;
     for (_, inbound, port) in candidates {
         inbounds.push(json!({
             "tag": inbound,
@@ -350,19 +386,26 @@ fn install_candidate_diagnostics(
             "settings": { "timeout": 10 }
         }));
     }
-    let routing = config.get_mut("routing")
+    let routing = config
+        .get_mut("routing")
         .and_then(Value::as_object_mut)
         .context("diagnostic_routing")?;
-    let rules = routing.entry("rules").or_insert_with(|| json!([]))
-        .as_array_mut().context("diagnostic_rules")?;
+    let rules = routing
+        .entry("rules")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .context("diagnostic_rules")?;
     // Only the candidate inbounds match these rules; the main inbound
     // follows the original ordered routing rules.
     for (tag, inbound, _) in candidates.iter().rev() {
-        rules.insert(0, json!({
-            "type": "field",
-            "inboundTag": [inbound],
-            "outboundTag": tag
-        }));
+        rules.insert(
+            0,
+            json!({
+                "type": "field",
+                "inboundTag": [inbound],
+                "outboundTag": tag
+            }),
+        );
     }
     Ok(())
 }

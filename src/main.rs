@@ -191,34 +191,48 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         .collect::<Vec<_>>()
                 };
                 let unavailable_balancers = |status: Status, code: &'static str| {
-                    entry.balancers().iter().flat_map(|case| {
-                        let key = format!("balancer/{}/{}", entry.id(), case.id);
-                        let config = if status == Status::Unsupported {
-                            Observation::new(status, code)
-                        } else {
-                            balancer::inspect(&document, case)
-                        };
-                        let missing = Observation::new(status, code);
-                        let overall = if config.status == Status::Ok { missing } else { config };
-                        let mut rows = vec![
-                            (format!("{key}/config"), config),
-                            (format!("{key}/candidates"), missing),
-                            (format!("{key}/route"), missing),
-                            (key.clone(), overall),
-                        ];
-                        rows.extend(case.candidates.iter().map(|tag| {
-                            (format!("{key}/candidate/{tag}"), missing)
-                        }));
-                        rows
-                    }).collect::<Vec<_>>()
+                    entry
+                        .balancers()
+                        .iter()
+                        .flat_map(|case| {
+                            let key = format!("balancer/{}/{}", entry.id(), case.id);
+                            let config = if status == Status::Unsupported {
+                                Observation::new(status, code)
+                            } else {
+                                balancer::inspect(&document, case)
+                            };
+                            let missing = Observation::new(status, code);
+                            let overall = if config.status == Status::Ok {
+                                missing
+                            } else {
+                                config
+                            };
+                            let mut rows = vec![
+                                (format!("{key}/config"), config),
+                                (format!("{key}/candidates"), missing),
+                                (format!("{key}/route"), missing),
+                                (key.clone(), overall),
+                            ];
+                            rows.extend(
+                                case.candidates
+                                    .iter()
+                                    .map(|tag| (format!("{key}/candidate/{tag}"), missing)),
+                            );
+                            rows
+                        })
+                        .collect::<Vec<_>>()
                 };
-                let (observation, checks, balance_checks) = if xray::prepare(document.clone(), 9876).is_err() {
+                let (observation, checks, balance_checks) = if xray::prepare(document.clone(), 9876)
+                    .is_err()
+                {
                     (
                         Observation::new(Status::Unsupported, "profile_incompatible"),
                         scenario_rows(Status::Unsupported, "profile_incompatible"),
                         unavailable_balancers(Status::Unsupported, "profile_incompatible"),
                     )
-                } else if targets.iter().all(|(_, ip)| ip.is_none()) && entry.scenarios().is_empty() && entry.balancers().is_empty()
+                } else if targets.iter().all(|(_, ip)| ip.is_none())
+                    && entry.scenarios().is_empty()
+                    && entry.balancers().is_empty()
                 {
                     (
                         Observation::new(Status::Unknown, "no_direct_baseline"),
@@ -252,7 +266,9 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                     (format!("scenario/{}/{}", entry.id(), case.id), result)
                                 })
                                 .collect();
-                            let balance_checks = entry.balancers().iter()
+                            let balance_checks = entry
+                                .balancers()
+                                .iter()
                                 .zip(steps.balancers)
                                 .flat_map(|(case, evidence)| {
                                     let key = format!("balancer/{}/{}", entry.id(), case.id);
@@ -262,10 +278,13 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                         (format!("{key}/route"), evidence.route),
                                         (key.clone(), evidence.overall),
                                     ];
-                                    rows.extend(case.candidates.iter().zip(evidence.candidate_details)
-                                        .map(|(tag, observation)| {
-                                            (format!("{key}/candidate/{tag}"), observation)
-                                        }));
+                                    rows.extend(
+                                        case.candidates.iter().zip(evidence.candidate_details).map(
+                                            |(tag, observation)| {
+                                                (format!("{key}/candidate/{tag}"), observation)
+                                            },
+                                        ),
+                                    );
                                     rows
                                 })
                                 .collect();

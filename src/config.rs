@@ -253,13 +253,21 @@ impl Config {
                     bail!("invalid or duplicate balancer scenario id");
                 }
                 let url = validate_https(&case.url)?;
-                let destination = (url.host_str().unwrap_or("").to_owned(), url.port_or_known_default());
+                let destination = (
+                    url.host_str().unwrap_or("").to_owned(),
+                    url.port_or_known_default(),
+                );
                 if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
                 if self.endpoints.iter().any(|e| {
-                    let Ok(endpoint_url) = validate_https(&e.url) else { return false; };
-                    (endpoint_url.host_str().unwrap_or("").to_owned(), endpoint_url.port_or_known_default()) == destination
+                    let Ok(endpoint_url) = validate_https(&e.url) else {
+                        return false;
+                    };
+                    (
+                        endpoint_url.host_str().unwrap_or("").to_owned(),
+                        endpoint_url.port_or_known_default(),
+                    ) == destination
                 }) {
                     bail!("balancer destination overlaps egress endpoint");
                 }
@@ -267,7 +275,10 @@ impl Config {
                     || case.candidates.is_empty()
                     || case.candidates.len() > 8
                     || case.candidates.iter().any(|tag| !valid_tag(tag))
-                    || case.fallback_tag.as_ref().is_some_and(|tag| !valid_tag(tag))
+                    || case
+                        .fallback_tag
+                        .as_ref()
+                        .is_some_and(|tag| !valid_tag(tag))
                     || case.fallback_tag.as_ref() == Some(&case.balancer_tag)
                 {
                     bail!("invalid balancer expectation");
