@@ -439,9 +439,11 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                 (format!("{key}/primary"), evidence.primary),
                                 (format!("{key}/backup"), evidence.backup),
                                 (format!("{key}/switch"), evidence.switch),
-                                (format!("{key}/recovery"), evidence.recovery),
-                                (key, evidence.overall),
                             ]);
+                            if case.restore_primary {
+                                checks.push((format!("{key}/recovery"), evidence.recovery));
+                            }
+                            checks.push((key, evidence.overall));
                         }
                         checks
                     },
@@ -509,8 +511,11 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
     }
     for case in entry.failover() {
         let key = format!("failover/{}/{}", entry.id(), case.id);
-        for component in ["config", "primary", "backup", "switch", "recovery"] {
+        for component in ["config", "primary", "backup", "switch"] {
             results.push((format!("{key}/{component}"), Observation::new(Status::Unknown, code)));
+        }
+        if case.restore_primary {
+            results.push((format!("{key}/recovery"), Observation::new(Status::Unknown, code)));
         }
         results.push((key, Observation::new(Status::Unknown, code)));
     }
