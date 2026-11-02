@@ -4,7 +4,7 @@ Small, self-hosted monitor for Xray JSON profiles. One container runs a Rust sch
 
 ## What is actually verified
 
-For each configured source, ProxySignal reads a **complete Xray JSON object**, replaces the original inbounds with one loopback HTTP diagnostic inbound, and runs the complete config in a supervised Xray process. It retains `dns`, `routing`, `outbounds`, `observatory`, `burstObservatory` and routing balancers without extracting one outbound. HTTPS CONNECT requests are executed *through Xray* to configurable IP-echo endpoints. The result is compared with a direct request from the same container to the same endpoint:
+For each configured profile, ProxySignal reads a **complete Xray JSON object**, replaces the original inbounds with one loopback HTTP diagnostic inbound, and runs the complete config in a supervised Xray process. It retains `dns`, `routing`, `outbounds`, `observatory`, `burstObservatory` and routing balancers without extracting one outbound. HTTPS CONNECT requests are executed *through Xray* to configurable IP-echo endpoints. The result is compared with a direct request from the same container to the same endpoint:
 
 - `OK`: all HTTPS checks returned valid public exit IPs different from direct egress; if `expected_exit_ips` is set, the returned IP must also match it.
 - `DEGRADED`: at least one endpoint verifies different egress, but not all do.
@@ -12,11 +12,37 @@ For each configured source, ProxySignal reads a **complete Xray JSON object**, r
 - `UNKNOWN`: insufficient evidence (for example, direct baseline unavailable or the exit IP is identical). Xray startup failure is also `UNKNOWN`.
 - `UNSUPPORTED`: the JSON cannot be safely adapted (inbound-dependent rules, API/listener semantics, no actual proxy outbound, invalid shape). Unsupported is never converted to success.
 
-Separate `source/<id>` checks monitor JSON retrieval and parsing. Their `FAILED` status indicates **source unavailability, not a proven VPN outage**. Configured HTTPS sources return one complete Xray JSON document, **not** base64 URI lists, links, Clash/sing-box JSON, or vendor-specific subscription envelopes. No caching of unavailable subscriptions yet.
+Separate `source/<id>` checks monitor JSON retrieval and parsing. Their `FAILED` status indicates **source unavailability, not a proven VPN outage**. HTTPS sources may return either one full Xray JSON object (legacy mode) or an array of full Xray JSON objects with exact `remarks` selectors. Array mode requires explicit operator `profiles` mappings and preserves the original JSON objects intact. Base64 URI lists, links, Clash/sing-box JSON and vendor-specific envelopes are unsupported. A failed refresh never reuses a stale profile as healthy. No caching of unavailable subscriptions yet.
 
-**Limitations:** Exit-IP difference is evidence for this single HTTPS scenario, not definitive proof of the selected Xray outbound, internal DNS server, expected route for other domains, balancer candidate, cascade chain, CDN behavior, `leastPing` policy, or automatic failover. Profiles with inbound-dependent routing or enabled inbound sniffing are rejected instead of being silently modified. The diagnostic inbound may have different sniffing context than a real client. Only operator-controlled trusted Xray profiles should be used; a child process inside the same container is not a security sandbox. A local monitor cannot verify its own host outage: use a separate watchdog.
+**Limitations:** Exit-IP difference is evidence for this single HTTPS scenario, not definitive proof of the selected Xray outbound, internal DNS server, expected route for other domains, balancer candidate, cascade chain, CDN behavior, `leastPing` policy, or automatic failover. Inbound-dependent routing that cannot be safely reproduced is rejected. Supported TCP sniffing properties from the first inbound are retained on the loopback diagnostic inbound, but source client protocol and other inbound paths are never launched or verified. In multi-profile mode each profile has an explicit UNKNOWN client observation. Only operator-controlled trusted Xray profiles should be used; a child process inside the same container is not a security sandbox. A local monitor cannot verify its own host outage: use a separate watchdog.
 
 The direct/proxied comparison calls an **operator-configured external HTTPS IP-echo endpoint**. Native direct requests resolve hostnames once, reject non-public DNS answers and pin the resolved addresses to limit DNS-rebinding/SSRF exposure; this cannot sandbox arbitrary operator-supplied Xray configurations. It does not need a paid service or proprietary backend, but an actual target is needed to measure external connectivity. If the direct path to the echo endpoint is blocked, result is `UNKNOWN`, not `OK`. Prefer at least two independent echo endpoints when available. Set `expected_exit_ips` for stronger expected-egress evidence; dynamic-exit nodes may need the list updated.
+
+## HTTPS arrays of full Xray JSON profiles
+
+An HTTPS source may select multiple full JSON configurations from one subscription. Identity is **operator-defined** and survives refreshes and array reordering. The `remarks` string is an exact selector from the published JSON array and is never printed as a target key. Selected profile IDs must be unique within the source. Up to 16 selections per subscription and 32 total effective profiles are supported. Each profile can configure its own `expected_exit_ips`, `scenarios`, `balancers`, `cascades`, `cdn` and lab-only `failover` checks. Source-level checks must be moved under the selected profile in array mode.
+
+```yaml
+sources:
+  - id: happ
+    kind: https
+    url: https://subscription.example.org/monitoring.json  # configure privately
+    headers:
+      User-Agent: /run/secrets/subscription-user-agent
+      Accept: /run/secrets/subscription-accept
+      X-HWID: /run/secrets/subscription-hwid
+      # Add any other device headers required by the subscription.
+    profiles:
+      - id: region-a
+        remarks: "Region A"
+      - id: region-b
+        remarks: "Region B"
+        # Optional per-profile expectations go here.
+```
+
+Header **values** are always read from secret files on every poll. This supports pre-registered device headers without device registration or subscription mutations. Never commit actual subscription URLs, device values or profile data. The source is fetched once per cycle; each matching original JSON is checked as a separate supervised Xray process, within the existing parallelism and timeout limits. Subscription array payloads are limited to 2 MiB and 32 entries; legacy single objects retain the 512 KiB bound. Only HTTPS, verified TLS, public pinned DNS resolution and no redirects are accepted.
+
+Keys are `source/happ`, `profile/happ/region-a`, `profile/happ/region-a/route`, `profile/happ/region-a/client` and (if configured) `balancer/happ/region-a/<id>`, etc. Missing, duplicated or malformed selected elements emit UNKNOWN for their profile/checks without losing earlier confirmed incidents. HTTP/parse failure reports FAILED only on `source/happ` and UNKNOWN for all selected profiles. For full profiles with an observed `leastPing` configuration, a newly started observatory may need time to select a healthy candidate. On transport failure only, ProxySignal retries the same HTTPS egress test up to three times with 10-second intervals inside the existing timeout; a still-unattributable startup failure remains `UNKNOWN`, not a proven VPN outage. A valid but unexpected exit IP remains `FAILED` when operator expectations require a different one. The generic `/route` observation is UNKNOWN by design: an exit-IP difference alone does not attest the selected outbound; configured route scenarios can provide narrower evidence under their own keys. An unchanged source-level OK proves only that the subscription response loaded, not that any VPN works. Successful HTTPS exit-IP checks remain per-scenario evidence; they do not attest original client-inbound behavior, leastPing policy, CDN transit, cascade hops or a physical route. Do not use UNKNOWN or UNSUPPORTED results to justify retiring a previous monitor.
 
 ## Optional DNS and routing scenarios (stage 3)
 
