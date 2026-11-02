@@ -21,6 +21,15 @@ sources:
     #     dns:
     #       server: "UDP:1.1.1.1:53"
     #       expected_ips: [93.184.215.14]
+    # Optional balancing scenario; verify exact outbound tags from this profile.
+    # The first routing rule for example.com should use balancerTag: latency.
+    # balancers:
+    #   - id: latency
+    #     url: https://example.com/
+    #     balancer_tag: latency
+    #     strategy: leastPing
+    #     candidates: [node-a, node-b]
+    #     fallback_tag: direct
   # - id: authenticated-profile
   #   kind: https
   #   url: https://subscription.example.org/config.json
