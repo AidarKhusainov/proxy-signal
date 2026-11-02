@@ -209,20 +209,7 @@ pub async fn check(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
-    let mut cmd = Command::new("xray");
-    cmd.arg("run")
-        .arg("-c")
-        .arg(&path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.as_std_mut().process_group(0);
-    }
-    let mut child = ManagedChild::new(cmd.spawn().context("xray_spawn")?);
+    let mut child = spawn_xray(&path)?;
     let deadline = Instant::now() + budget;
     let result = async {
         timeout_at(deadline, ready(&mut child.child, port))
@@ -576,7 +563,7 @@ fn spawn_balancer_probe<F>(
 
 /// Test-only inbounds force each candidate without changing routing decisions
 /// for the ordinary diagnostic inbound. Never applied to a stored/source profile.
-fn install_candidate_diagnostics(
+pub(crate) fn install_candidate_diagnostics(
     config: &mut Value,
     candidates: &[(String, String, u16)],
 ) -> Result<()> {
@@ -630,7 +617,7 @@ fn read_log(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-async fn ready(child: &mut Child, port: u16) -> Result<()> {
+pub(crate) async fn ready(child: &mut Child, port: u16) -> Result<()> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     for _ in 0..50 {
         if child.try_wait()?.is_some() {
@@ -644,10 +631,27 @@ async fn ready(child: &mut Child, port: u16) -> Result<()> {
     bail!("xray_not_ready")
 }
 
+pub(crate) fn spawn_xray(path: &Path) -> Result<ManagedChild> {
+    let mut cmd = Command::new("xray");
+    cmd.arg("run")
+        .arg("-c")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
+    Ok(ManagedChild::new(cmd.spawn().context("xray_spawn")?))
+}
+
 /// Cancellation-safe ownership: dropping a pending probe kills the entire
 /// Xray process group, not just its immediate child. Tokio reaps the child.
-struct ManagedChild {
-    child: Child,
+pub(crate) struct ManagedChild {
+    pub(crate) child: Child,
     finished: bool,
 }
 
@@ -671,7 +675,7 @@ impl ManagedChild {
         let _ = self.child.start_kill();
     }
 
-    async fn stop(&mut self) {
+    pub(crate) async fn stop(&mut self) {
         self.kill_group();
         self.finished = matches!(
             tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await,
