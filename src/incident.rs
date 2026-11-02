@@ -327,6 +327,12 @@ mod tests {
                 true,
             );
             assert_eq!(state.pending.len(), 1);
+            // The original FAILED event may have been persisted by an older
+            // release, before the monitor learned the recovery evidence code.
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("state.json");
+            state.persist(&path).unwrap();
+            let mut state = State::load(&path).unwrap();
             state.observe(
                 key,
                 Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"),
