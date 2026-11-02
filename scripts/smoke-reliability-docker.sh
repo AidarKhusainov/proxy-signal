@@ -179,6 +179,7 @@ class Monitor:
         state = self.state()
         record = state.get("records", {}).get(key, {}) if state else {}
         return (record.get("last_status") == status
+                and record.get("last_observed_at") == int(matches[-1])
                 and (self.data / "state.json").stat().st_mtime >= int(matches[-1]))
 
     def idle(self):
@@ -267,6 +268,29 @@ def cleanup():
         shutil.rmtree(runtime)
 
 
+def failure_diagnostics():
+    if not containers:
+        return
+    name = containers[-1]
+    inspected = docker("inspect", name, check=False, timeout=3)
+    if inspected.returncode:
+        print("DIAGNOSTIC container_state_unavailable", file=sys.stderr, flush=True)
+        return
+    info = json.loads(inspected.stdout)[0]
+    if info["Config"]["Labels"].get(LABEL) != run_key:
+        return
+    state = info["State"]
+    result = docker("logs", "--tail", "80", name, check=False, timeout=3)
+    output = result.stdout + result.stderr
+    categories = [code for code in ("startup_or_storage_error", "telegram_delivery_failed",
+                  "source_task_error", "probe_task_error") if f"ProxySignal: {code}" in output]
+    # Whitelist only fixed categories and numeric/Boolean process state.
+    # Never emit raw logs, daemon error strings, config values, or credentials.
+    print("DIAGNOSTIC " + json.dumps({"exit_code": int(state["ExitCode"]),
+          "running": bool(state["Running"]), "oom_killed": bool(state["OOMKilled"]),
+          "monitor_error_categories": categories}, sort_keys=True), file=sys.stderr, flush=True)
+
+
 def main():
     global runtime_owned
     require(os.geteuid() == 0, "run through the authorized isolated-host helper as root")
@@ -277,6 +301,9 @@ def main():
     runtime.mkdir(mode=0o700)
     runtime_owned = True
     profiles.mkdir(mode=0o755)
+    # mkdir's mode is filtered by the inherited private umask. The bind-mounted
+    # directory must explicitly permit the unprivileged container to traverse it.
+    profiles.chmod(0o755)
     write(profiles / "invalid-token", "0:isolated-lab-invalid-token\n")
     write(profiles / "synthetic.json", synthetic("wrong"))
     source = ("  - id: synthetic\n    kind: file\n    path: /profiles/synthetic.json\n"
@@ -298,7 +325,7 @@ def main():
     require(notice_sequence(first, key) == ["FAILED"], "failure was not confirmed once")
     require(notice_sequence(first, "profile/synthetic") == ["FAILED"], "VPN failure incident missing")
     if positive_profile:
-        require(monitor.completed("profile/positive", "OK", 3), "full test profile did not prove positive egress")
+        require(monitor.completed("profile/positive", "OK", 3), "authorized laboratory VPN egress was not verified")
         fresh_record(first, "profile/positive", "OK", None)
     require("telegram_delivery_failed" in docker("logs", monitor.name).stderr,
             "failed notification delivery was not observed")
@@ -339,11 +366,11 @@ def main():
         fresh_record(recovered, "profile/positive", "OK", None)
         positive_results = re.findall(r"^ts=\d+ target=profile/positive status=([A-Z]+) evidence=", monitor.logs(), re.M)
         require(len(positive_results) >= 8 and set(positive_results) == {"OK"},
-                "positive full-profile egress was not consistently verified across the acceptance cycles")
+                "authorized laboratory VPN egress was not consistently verified across the acceptance cycles")
     monitor.stop()
     monitor.metrics("periodic")
     print("PASS: genuine restored source and HTTPS route recover once; no repeated-cycle notification spam", flush=True)
-    print("COVERAGE " + ("positive full test profile egress verified" if positive_profile else
+    print("COVERAGE " + ("authorized laboratory VPN egress verified; fixture provenance is reported by the workflow" if positive_profile else
                          "positive production-like profile unavailable; synthetic HTTPS route verified only"), flush=True)
 
     # A second Xray accepts an HTTP proxy connection on loopback. The monitor's
@@ -448,6 +475,10 @@ except Exception as error:
     # Only harness-controlled messages are safe; library errors may embed paths.
     reason = str(error) if isinstance(error, RuntimeError) else type(error).__name__
     print("FAIL: " + reason, file=sys.stderr, flush=True)
+    try:
+        failure_diagnostics()
+    except Exception:
+        print("DIAGNOSTIC unavailable", file=sys.stderr, flush=True)
 finally:
     try:
         cleanup()

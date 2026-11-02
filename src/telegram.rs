@@ -66,7 +66,7 @@ impl Sender {
             Status::Ok => "Восстановлено: OK",
             Status::Failed => "Подтверждённый сбой: FAILED",
             Status::Degraded => "Частичная доступность: DEGRADED",
-            Status::Unknown => "Сбой кандидатов устранён; выбор маршрута не подтверждён: UNKNOWN",
+            Status::Unknown => "Сбой устранён; полная работоспособность не подтверждена: UNKNOWN",
             Status::Unsupported => return Ok(()),
         };
         let body = serde_json::json!({
