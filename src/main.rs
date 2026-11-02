@@ -271,6 +271,11 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                 .zip(steps.balancers)
                                 .flat_map(|(case, evidence)| {
                                     let key = format!("balancer/{}/{}", entry.id(), case.id);
+                                    if let Some(index) = evidence.selected_candidate_index {
+                                        println!(
+                                            "target={key} selected_candidate_index={index} proof=xray_access"
+                                        );
+                                    }
                                     let mut rows = vec![
                                         (format!("{key}/config"), evidence.config),
                                         (format!("{key}/candidates"), evidence.candidates),
