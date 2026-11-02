@@ -505,7 +505,13 @@ pub async fn check(
                 Err(observation) => observation,
                 Ok(http_ok) => match &logs {
                     Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
-                        scenario::evaluate_for_inbound(case, http_ok, access, error.as_deref().unwrap_or(""), &inbound_tag)
+                        scenario::evaluate_for_inbound(
+                            case,
+                            http_ok,
+                            access,
+                            error.as_deref().unwrap_or(""),
+                            &inbound_tag,
+                        )
                     }
                     _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
                 },
@@ -568,8 +574,7 @@ pub async fn check(
                     logs.as_ref()
                         .and_then(|(access, _)| access.as_deref())
                         .and_then(|access| {
-                            scenario::observed_outbound(&case.url, &inbound_tag, access)
-                                .ok()
+                            scenario::observed_outbound(&case.url, &inbound_tag, access).ok()
                         })
                         .and_then(|tag| {
                             case.candidates
