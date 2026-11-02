@@ -25,7 +25,8 @@ use tokio::{
 };
 
 /// Replaces only local inbounds and logs. Never reconstructs or selects a single outbound.
-/// Inbound-dependent routing cannot be reproduced safely and is rejected.
+/// The test HTTP inbound can reproduce common TCP sniffing settings, but does not
+/// prove the behavior of a different client inbound protocol.
 pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     let object = config.as_object_mut().context("not_a_full_profile")?;
     if object.contains_key("api")
@@ -34,15 +35,20 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
     {
         bail!("unsafe_or_unsupported_listener");
     }
-    if let Some(inbounds) = object.get("inbounds") {
-        let inbounds = inbounds.as_array().context("invalid_inbounds")?;
-        if inbounds.iter().any(|inbound| {
-            !inbound.is_object()
-                || inbound.get("sniffing").and_then(|s| s.get("enabled"))
-                    == Some(&Value::Bool(true))
-        }) {
-            bail!("inbound_sniffing_cannot_be_preserved");
-        }
+    // Match the first original inbound's tag, so unchanged inboundTag rules
+    // retain their meaning for this *one* diagnostic path. Other original
+    // inbounds are never launched and remain outside verified client coverage.
+    let sniffing = diagnostic_sniffing(object.get("inbounds"))?;
+    let diagnostic_tag = object
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .and_then(|inbounds| inbounds.first())
+        .and_then(|inbound| inbound.get("tag"))
+        .and_then(Value::as_str)
+        .unwrap_or("proxy-signal-probe-in")
+        .to_owned();
+    if diagnostic_tag.is_empty() {
+        bail!("invalid_diagnostic_inbound_tag");
     }
     if let Some(routing) = object.get("routing") {
         let routing = routing.as_object().context("invalid_routing")?;
@@ -52,11 +58,30 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
                 if !rule.is_object() {
                     bail!("invalid_routing_rule");
                 }
-                if ["inboundTag", "source", "user", "protocol", "attrs"]
+                // source/user/attrs depend on client identity or its network
+                // origin; a local HTTP probe cannot reproduce those fields.
+                if ["source", "user", "attrs"]
                     .iter()
                     .any(|k| rule.get(k).is_some())
                 {
                     bail!("inbound_dependent_routing");
+                }
+                // inboundTag is safe for one selected original inbound when we
+                // preserve its tag. The other inbound paths remain unverified.
+                if let Some(tags) = rule.get("inboundTag") {
+                    if object
+                        .get("inbounds")
+                        .and_then(Value::as_array)
+                        .and_then(|inbounds| inbounds.first())
+                        .and_then(|inbound| inbound.get("tag"))
+                        .and_then(Value::as_str)
+                        .is_none()
+                        || tags
+                            .as_array()
+                            .is_none_or(|values| !values.iter().all(Value::is_string))
+                    {
+                        bail!("unsupported_inbound_tag_routing");
+                    }
                 }
             }
         }
@@ -76,18 +101,105 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
         bail!("no_proxy_outbound");
     }
     // Old inbounds cannot be started: they might expose authentication endpoints or bind host ports.
-    object.insert(
-        "inbounds".into(),
-        json!([{
-            "tag": "proxy-signal-probe-in",
-            "listen": "127.0.0.1",
-            "port": port,
-            "protocol": "http",
-            "settings": { "timeout": 10 }
-        }]),
-    );
+    let mut inbound = json!({
+        "tag": diagnostic_tag,
+        "listen": "127.0.0.1",
+        "port": port,
+        "protocol": "http",
+        "settings": { "timeout": 10 }
+    });
+    if let Some(sniffing) = sniffing {
+        inbound["sniffing"] = sniffing;
+    }
+    object.insert("inbounds".into(), Value::Array(vec![inbound]));
     object.insert("log".into(), json!({"loglevel": "none"}));
     Ok(config)
+}
+
+/// Only the first original inbound's policy is exercised. No tag is logged.
+pub(crate) fn diagnostic_inbound_tag(config: &Value) -> &str {
+    config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .and_then(|inbounds| inbounds.first())
+        .and_then(|inbound| inbound.get("tag"))
+        .and_then(Value::as_str)
+        .filter(|tag| !tag.is_empty())
+        .unwrap_or("proxy-signal-probe-in")
+}
+
+/// Client inbound semantics are not validated by a diagnostic HTTP proxy.
+pub(crate) fn has_enabled_sniffing(config: &Value) -> bool {
+    config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .is_some_and(|inbounds| {
+            inbounds
+                .iter()
+                .any(|inbound| inbound.pointer("/sniffing/enabled") == Some(&Value::Bool(true)))
+        })
+}
+
+/// Preserve the exact sniffing object, including exclusions. Xray itself
+/// interprets domain/IP rules; we do not approximate those rules in Rust.
+fn diagnostic_sniffing(inbounds: Option<&Value>) -> Result<Option<Value>> {
+    let Some(inbounds) = inbounds else {
+        return Ok(None);
+    };
+    let inbounds = inbounds.as_array().context("invalid_inbounds")?;
+    let mut common: Option<Option<Value>> = None;
+    for inbound in inbounds {
+        let inbound = inbound.as_object().context("invalid_inbound")?;
+        let sniffing = match inbound.get("sniffing") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let settings = value.as_object().context("invalid_sniffing")?;
+                let enabled = match settings.get("enabled") {
+                    None | Some(Value::Bool(false)) => false,
+                    Some(Value::Bool(true)) => true,
+                    _ => bail!("invalid_sniffing"),
+                };
+                if enabled {
+                    if settings.keys().any(|key| {
+                        !matches!(
+                            key.as_str(),
+                            "enabled"
+                                | "destOverride"
+                                | "routeOnly"
+                                | "metadataOnly"
+                                | "domainsExcluded"
+                                | "ipsExcluded"
+                        )
+                    }) {
+                        bail!("unsupported_sniffing_field");
+                    }
+                    for key in ["routeOnly", "metadataOnly"] {
+                        if settings.get(key).is_some_and(|value| !value.is_boolean()) {
+                            bail!("invalid_sniffing");
+                        }
+                    }
+                    for key in ["destOverride", "domainsExcluded", "ipsExcluded"] {
+                        if settings.get(key).is_some_and(|value| {
+                            value
+                                .as_array()
+                                .is_none_or(|items| !items.iter().all(Value::is_string))
+                        }) {
+                            bail!("invalid_sniffing");
+                        }
+                    }
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            }
+        };
+        match &common {
+            Some(previous) if previous != &sniffing => bail!("ambiguous_inbound_sniffing"),
+            None => common = Some(sniffing),
+            _ => {}
+        }
+    }
+    Ok(common.flatten())
 }
 
 /// One supervised Xray process runs both ordinary egress probes and optional
@@ -144,6 +256,7 @@ pub async fn check(
     let port = socket.local_addr()?.port();
     drop(socket);
     let original = config.clone();
+    let inbound_tag = diagnostic_inbound_tag(&original).to_owned();
     let mut config = prepare(config, port)?;
     let inspected: Vec<_> = balancers
         .iter()
@@ -392,7 +505,13 @@ pub async fn check(
                 Err(observation) => observation,
                 Ok(http_ok) => match &logs {
                     Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
-                        scenario::evaluate(case, http_ok, access, error.as_deref().unwrap_or(""))
+                        scenario::evaluate_for_inbound(
+                            case,
+                            http_ok,
+                            access,
+                            error.as_deref().unwrap_or(""),
+                            &inbound_tag,
+                        )
                     }
                     _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
                 },
@@ -442,11 +561,12 @@ pub async fn check(
                     .collect::<Vec<_>>();
                 let candidate_details = candidates;
                 let candidates = balancer::candidate_status(&candidate_details);
-                let route = balancer::route(
+                let route = balancer::route_for_inbound(
                     case,
                     balancer::attributable(&original, case),
                     attempt.route_http,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                    &inbound_tag,
                 );
                 // Report only an index into the configured candidate list:
                 // outbound tags themselves may contain operator-sensitive labels.
@@ -454,8 +574,7 @@ pub async fn check(
                     logs.as_ref()
                         .and_then(|(access, _)| access.as_deref())
                         .and_then(|access| {
-                            scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access)
-                                .ok()
+                            scenario::observed_outbound(&case.url, &inbound_tag, access).ok()
                         })
                         .and_then(|tag| {
                             case.candidates
@@ -491,11 +610,12 @@ pub async fn check(
                         overall: config,
                     };
                 }
-                let https = cascade::https(
+                let https = cascade::https_for_inbound(
                     &original,
                     case,
                     http_ok,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                    &inbound_tag,
                 );
                 let hops = cascade::hops();
                 let overall = cascade::overall(config, https, hops);
@@ -521,11 +641,12 @@ pub async fn check(
                 }
                 CdnChecks {
                     config,
-                    tunnel: cdn::tunnel(
+                    tunnel: cdn::tunnel_for_inbound(
                         &original,
                         case,
                         http_ok,
                         logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                        &inbound_tag,
                     ),
                     route: cdn::route(),
                 }
@@ -853,10 +974,192 @@ mod tests {
     }
 
     #[test]
+    fn preserves_sniffing_and_routes_without_exposing_original_inbounds() {
+        let original = json!({
+            "inbounds": [{
+                "tag": "client",
+                "listen": "0.0.0.0",
+                "port": 1080,
+                "protocol": "socks",
+                "sniffing": {
+                    "enabled": true,
+                    "destOverride": ["http", "tls", "quic", "fakedns"],
+                    "routeOnly": true,
+                    "metadataOnly": false,
+                    "domainsExcluded": ["full:excluded.example.org"],
+                    "ipsExcluded": ["192.0.2.0/24"]
+                }
+            }],
+            "dns": {"servers": ["1.1.1.1"]},
+            "routing": {"rules": [
+                {"type": "field", "domain": ["full:sniffed.example.org"], "outboundTag": "vpn"},
+                {"type": "field", "ip": ["0.0.0.0/0"], "outboundTag": "direct"}
+            ]},
+            "outbounds": [
+                {"tag": "vpn", "protocol": "vless"},
+                {"tag": "direct", "protocol": "freedom"}
+            ],
+            "observatory": {"subjectSelector": ["vpn"]}
+        });
+        assert!(has_enabled_sniffing(&original));
+        let prepared = prepare(original.clone(), 19123).unwrap();
+        for key in ["dns", "routing", "outbounds", "observatory"] {
+            assert_eq!(prepared[key], original[key]);
+        }
+        assert_eq!(
+            prepared["inbounds"][0]["sniffing"],
+            original["inbounds"][0]["sniffing"]
+        );
+        assert_eq!(prepared["inbounds"][0]["listen"], "127.0.0.1");
+        assert_eq!(prepared["inbounds"][0]["port"], 19123);
+        assert_eq!(prepared["inbounds"][0]["protocol"], "http");
+        assert_eq!(prepared["inbounds"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_conflicting_sniffing_instead_of_silently_changing_routes() {
+        let mut original = json!({
+            "outbounds": [{"tag": "vpn", "protocol": "vless"}],
+            "inbounds": [
+                {"protocol": "socks", "sniffing": {
+                    "enabled": true, "destOverride": ["tls"], "routeOnly": true
+                }},
+                {"protocol": "http", "sniffing": {
+                    "enabled": true, "destOverride": ["tls"], "routeOnly": false
+                }}
+            ]
+        });
+        assert!(prepare(original.clone(), 19123).is_err());
+        original["inbounds"][1]["sniffing"]["routeOnly"] = json!(true);
+        assert!(prepare(original, 19123).is_ok());
+    }
+
+    #[test]
+    fn unsupported_or_malformed_sniffing_fails_closed() {
+        let make = |sniffing: Value| {
+            json!({
+                "outbounds": [{"protocol": "vless"}],
+                "inbounds": [{"protocol": "socks", "sniffing": sniffing}]
+            })
+        };
+        assert!(prepare(make(json!({"enabled": "yes"})), 19123).is_err());
+        assert!(prepare(make(json!({"enabled": true, "destOverride": "tls"})), 19123).is_err());
+        assert!(prepare(
+            make(json!({"enabled": true, "metadataOnly": "false"})),
+            19123
+        )
+        .is_err());
+        assert!(prepare(make(json!({"enabled": true, "unknownFlag": true})), 19123).is_err());
+        assert!(prepare(
+            make(json!({"enabled": true, "metadataOnly": true, "routeOnly": true})),
+            19123
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn https_without_route_evidence_cannot_verify_sniffing_routing() {
+        use crate::config::ExpectedRoute;
+        let profile = json!({
+            "outbounds": [{"tag":"vpn", "protocol":"vless"}],
+            "inbounds": [{"protocol":"socks", "sniffing": {
+                "enabled":true, "destOverride":["tls"], "domainsExcluded":["excluded.example.org"]
+            }}],
+            "routing": {"rules":[{"type":"field", "domain":["full:example.org"], "outboundTag":"vpn"}]}
+        });
+        let prepared = prepare(profile, 19123).unwrap();
+        assert_eq!(prepared["inbounds"][0]["sniffing"]["enabled"], true);
+        let case = Scenario {
+            id: "sniff".into(),
+            url: "https://example.org/".into(),
+            route: ExpectedRoute::Proxy,
+            outbound_tag: "vpn".into(),
+            dns: None,
+        };
+        assert_eq!(
+            scenario::evaluate(&case, true, "", "").status,
+            Status::Unknown
+        );
+        // HTTPS alone must neither prove the intended sniffed-domain route nor
+        // hide a different outbound when Xray's access log contradicts it.
+        let wrong = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [proxy-signal-probe-in ==> direct]";
+        let correct = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [proxy-signal-probe-in ==> vpn]";
+        assert_eq!(
+            scenario::evaluate(&case, true, wrong, "").status,
+            Status::Failed
+        );
+        assert_eq!(
+            scenario::evaluate(&case, true, correct, "").status,
+            Status::Ok
+        );
+    }
+
+    #[test]
+    fn retains_inbound_tag_rules_and_first_original_tag() {
+        let original = json!({
+            "inbounds": [
+                {"tag":"socks-client", "protocol":"socks", "port":1080, "listen":"0.0.0.0",
+                 "sniffing":{"enabled":true,"destOverride":["http","tls"]}},
+                {"tag":"http-client", "protocol":"http", "port":8080, "listen":"0.0.0.0",
+                 "sniffing":{"enabled":true,"destOverride":["http","tls"]}}
+            ],
+            "routing":{"rules":[
+                {"type":"field","inboundTag":["socks-client"],"outboundTag":"vpn"},
+                {"type":"field","inboundTag":["http-client"],"outboundTag":"direct"},
+                {"type":"field","protocol":["bittorrent"],"outboundTag":"blocked"}
+            ]},
+            "outbounds":[
+                {"tag":"vpn","protocol":"vless"},
+                {"tag":"direct","protocol":"freedom"},
+                {"tag":"blocked","protocol":"blackhole"}
+            ]
+        });
+        assert_eq!(diagnostic_inbound_tag(&original), "socks-client");
+        let prepared = prepare(original.clone(), 19001).unwrap();
+        assert_eq!(prepared["routing"], original["routing"]);
+        assert_eq!(prepared["inbounds"][0]["tag"], "socks-client");
+        assert_eq!(prepared["inbounds"][0]["listen"], "127.0.0.1");
+        assert_eq!(prepared["inbounds"][0]["port"], 19001);
+        assert_eq!(prepared["inbounds"].as_array().unwrap().len(), 1);
+        let case = Scenario {
+            id: "client-route".into(),
+            url: "https://example.org/".into(),
+            route: crate::config::ExpectedRoute::Proxy,
+            outbound_tag: "vpn".into(),
+            dns: None,
+        };
+        let log = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [socks-client ==> vpn]";
+        assert_eq!(
+            scenario::evaluate_for_inbound(&case, true, log, "", "socks-client").status,
+            Status::Ok
+        );
+        assert_eq!(
+            scenario::evaluate_for_inbound(&case, true, log, "", "http-client").status,
+            Status::Unknown
+        );
+    }
+
+    #[test]
+    fn still_rejects_client_identity_dependent_routing() {
+        for key in ["source", "user", "attrs"] {
+            let mut rule = json!({"type": "field", "outboundTag": "vpn"});
+            rule[key] = json!(["example"]);
+            let profile = json!({
+                "inbounds": [{"tag": "client", "sniffing": {
+                    "enabled": true, "destOverride": ["tls"]
+                }}],
+                "routing": {"rules": [rule]},
+                "outbounds": [{"tag": "vpn", "protocol": "vless"}]
+            });
+            assert!(prepare(profile, 19123).is_err());
+        }
+    }
+
+    #[test]
     fn rejects_inbound_dependent_routes_and_direct_only() {
         let config = json!({"outbounds": [{"protocol": "vless"}], "routing": {"rules": [{"inboundTag": ["user-a"]}]}});
         assert!(prepare(config, 10001).is_err());
         assert!(prepare(json!({"outbounds": [{"protocol": "freedom"}]}), 10001).is_err());
-        assert!(prepare(json!({"outbounds": [{"protocol": "vless"}], "inbounds": [{"sniffing": {"enabled": true}}]}), 10001).is_err());
+        assert!(prepare(json!({"outbounds": [{"protocol": "vless"}], "inbounds": [{"sniffing": {"enabled": true}}]}), 10001).is_ok());
     }
 }

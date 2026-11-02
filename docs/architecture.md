@@ -27,6 +27,28 @@ Executing an isolated outbound is useful but cannot be labeled a full-profile ch
 
 If inbound-specific matching would change meaning, or evidence cannot show the selected path, report UNSUPPORTED/UNKNOWN rather than alter routing or invent proof. Probes must declare what they prove; status codes alone are insufficient for routing claims.
 
+### Inbound sniffing in Xray probes
+
+An isolated loopback HTTP inbound replaces every original listener. When all original
+inbounds have the same enabled sniffing object, its `destOverride`, `routeOnly`,
+`metadataOnly`, `domainsExcluded` and `ipsExcluded` are copied unchanged.
+The official Xray engine applies these settings, not a Rust reimplementation.
+Disabled sniffing is not enabled by the probe. Conflicting or malformed sniffing
+settings are unsupported. If the profile has inboundTag rules, the diagnostic
+inbound keeps the tag of the first original inbound, leaving the routing rules
+unchanged. This verifies only that selected inbound's diagnostic HTTP path;
+other original inbounds, their authentication and their client behavior remain
+unverified. Rules based on client source, user or attrs are unsupported.
+Protocol-sensitive routing is executed by Xray with the copied sniffing policy,
+but still does not establish equivalence to the original client.
+
+Successful HTTPS and exit-IP checks establish behavior **through the diagnostic
+HTTP inbound**, not the original Happ/SOCKS/TUN client's inbound semantics.
+The selected route requires an independent Xray access-log observation for the
+specific request. When it is missing or ambiguous, routing remains UNKNOWN even
+if HTTPS succeeds. Checking the client's exact inbound behavior requires a separate
+controlled client test; no synthetic egress result proves it.
+
 Probes that intentionally modify routes to simulate a failed candidate are **simulation** checks, not proofs of automatic failover in an unchanged client. Live network impairment requires separate isolated execution and explicit opt-in; never modify the host firewall or production nodes.
 
 ## Data and identity

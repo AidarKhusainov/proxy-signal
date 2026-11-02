@@ -223,11 +223,22 @@ fn attributable(profile: &Value, case: &CdnScenario) -> bool {
 
 /// Real HTTPS over the unchanged full-profile diagnostic inbound. Xray access
 /// evidence must identify the configured outbound; a raw HTTPS 200 is not proof.
+#[cfg(test)]
 pub fn tunnel(
     profile: &Value,
     case: &CdnScenario,
     http_ok: Option<bool>,
     access: Option<&str>,
+) -> Observation {
+    tunnel_for_inbound(profile, case, http_ok, access, "proxy-signal-probe-in")
+}
+
+pub fn tunnel_for_inbound(
+    profile: &Value,
+    case: &CdnScenario,
+    http_ok: Option<bool>,
+    access: Option<&str>,
+    inbound_tag: &str,
 ) -> Observation {
     if !attributable(profile, case) {
         return unavailable(Status::Unknown, "cdn_tunnel_route_not_attributable");
@@ -235,7 +246,7 @@ pub fn tunnel(
     let (Some(http_ok), Some(access)) = (http_ok, access) else {
         return unavailable(Status::Unknown, "cdn_tunnel_unobserved");
     };
-    match scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access) {
+    match scenario::observed_outbound(&case.url, inbound_tag, access) {
         Ok(tag) if tag != case.outbound_tag => {
             unavailable(Status::Failed, "cdn_unexpected_outbound")
         }

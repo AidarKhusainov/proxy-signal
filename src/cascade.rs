@@ -113,11 +113,22 @@ fn attributable(profile: &Value, case: &CascadeScenario) -> bool {
 }
 
 /// HTTPS and the first selected outbound are separate evidence from hop traversal.
+#[cfg(test)]
 pub fn https(
     profile: &Value,
     case: &CascadeScenario,
     http_ok: Option<bool>,
     access: Option<&str>,
+) -> Observation {
+    https_for_inbound(profile, case, http_ok, access, "proxy-signal-probe-in")
+}
+
+pub fn https_for_inbound(
+    profile: &Value,
+    case: &CascadeScenario,
+    http_ok: Option<bool>,
+    access: Option<&str>,
+    inbound_tag: &str,
 ) -> Observation {
     if !attributable(profile, case) {
         return Observation::new(Status::Unknown, "cascade_route_not_attributable");
@@ -125,7 +136,7 @@ pub fn https(
     let (Some(http_ok), Some(access)) = (http_ok, access) else {
         return Observation::new(Status::Unknown, "cascade_https_unobserved");
     };
-    match scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access) {
+    match scenario::observed_outbound(&case.url, inbound_tag, access) {
         Ok(tag) if Some(tag) != case.outbounds.first().map(String::as_str) => {
             Observation::new(Status::Failed, "cascade_unexpected_outbound")
         }

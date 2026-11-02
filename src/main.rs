@@ -462,6 +462,12 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         ]
                     })
                     .collect::<Vec<_>>();
+                let client_evidence = xray::has_enabled_sniffing(&document).then(|| {
+                    (
+                        format!("profile/{}/client", entry.id()),
+                        Observation::new(Status::Unknown, "client_inbound_unverified"),
+                    )
+                });
                 (
                     format!("profile/{}", entry.id()),
                     observation,
@@ -488,13 +494,23 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         }
                         checks
                     },
+                    client_evidence,
                 )
             });
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn, failover)) =
-                result
+            if let Ok((
+                key,
+                observation,
+                elapsed,
+                scenarios,
+                balancers,
+                cascades,
+                cdn,
+                failover,
+                client_evidence,
+            )) = result
             {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
@@ -504,6 +520,9 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                 results.extend(cascades);
                 results.extend(cdn);
                 results.extend(failover);
+                if let Some(client_evidence) = client_evidence {
+                    results.push(client_evidence);
+                }
             } else {
                 eprintln!("ProxySignal: probe_task_error");
             }
