@@ -28,7 +28,7 @@ fn missing(config: Observation) -> Checks {
 /// Production endpoints, external sockets and routing configurations are never modified.
 pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
     let Some(primary) = profile.get("outbounds").and_then(Value::as_array)
-        .and_then(|items| items.iter().find(|o| o.get("tag").and_then(Value::as_str) == Some(&case.primary_tag))) else {
+        .and_then(|items| items.iter().find(|o| o.get("tag").and_then(Value::as_str) == Some(case.primary_tag.as_str()))) else {
         return Observation::new(Status::Unsupported, "failover_primary_missing");
     };
     let servers = primary.pointer("/settings/servers").and_then(Value::as_array);
@@ -67,7 +67,7 @@ pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
         let mut next = Some(alternative.as_str());
         let mut visited = HashSet::new();
         while let Some(tag) = next {
-            if tag == case.primary_tag {
+            if tag == case.primary_tag.as_str() {
                 return Observation::new(Status::Failed, "failover_backup_depends_on_primary");
             }
             if !visited.insert(tag) {
