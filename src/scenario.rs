@@ -46,23 +46,22 @@ pub fn static_check(profile: &Value, case: &Scenario) -> Option<Observation> {
     }
 }
 
-/// An access event for this exact inbound and destination is required.
-/// Neither a static routing rule nor an HTTPS response proves outbound selection.
-pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Observation {
-    let Ok(url) = reqwest::Url::parse(&case.url) else {
-        return Observation::new(Status::Unsupported, "scenario_invalid_url");
-    };
-    let Some(host) = url.host_str() else {
-        return Observation::new(Status::Unsupported, "scenario_invalid_url");
-    };
-    let destination = format!("{}:{}", host, url.port_or_known_default().unwrap_or(443));
+/// Extract an unambiguous outbound tag for one HTTPS CONNECT and one diagnostic
+/// inbound. An unrelated request, a second match or an unparseable log is not proof.
+pub fn observed_outbound<'a>(
+    url: &str,
+    inbound: &str,
+    access: &'a str,
+) -> Result<&'a str, &'static str> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "scenario_invalid_url")?;
+    let host = parsed.host_str().ok_or("scenario_invalid_url")?;
+    let destination = format!("{}:{}", host, parsed.port_or_known_default().unwrap_or(443));
+    let inbound_prefix = format!(" [{inbound}");
     let mut chosen: Option<&str> = None;
     for line in access.lines() {
         let Some((_, entry)) = line.split_once(" accepted ") else {
             continue;
         };
-        // Xray's HTTP CONNECT inbound logs the HTTP request URL (host:port),
-        // while other inbounds may log a network destination (tcp:host:port).
         let Some(entry) = entry
             .strip_prefix(&format!("//{destination}"))
             .or_else(|| entry.strip_prefix(&destination))
@@ -70,10 +69,9 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
         else {
             continue;
         };
-        let Some(entry) = entry.strip_prefix(" [proxy-signal-probe-in") else {
+        let Some(entry) = entry.strip_prefix(&inbound_prefix) else {
             continue;
         };
-        // Xray emits both "->" and ">>" depending on the routing path.
         let Some(entry) = entry
             .strip_prefix(" ==> ")
             .or_else(|| entry.strip_prefix(" -> "))
@@ -85,12 +83,19 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
             continue;
         };
         if tag.is_empty() || chosen.is_some() {
-            return Observation::new(Status::Unknown, "ambiguous_route_evidence");
+            return Err("ambiguous_route_evidence");
         }
         chosen = Some(tag);
     }
-    let Some(actual) = chosen else {
-        return Observation::new(Status::Unknown, "route_not_observed");
+    chosen.ok_or("route_not_observed")
+}
+
+/// An access event for this exact inbound and destination is required.
+/// Neither a static routing rule nor an HTTPS response proves outbound selection.
+pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Observation {
+    let actual = match observed_outbound(&case.url, "proxy-signal-probe-in", access) {
+        Ok(tag) => tag,
+        Err(reason) => return Observation::new(Status::Unknown, reason),
     };
     if actual != case.outbound_tag {
         return Observation::new(Status::Failed, "unexpected_outbound");
@@ -104,6 +109,12 @@ pub fn evaluate(case: &Scenario, http_ok: bool, access: &str, error: &str) -> Ob
     }
     let Some(dns) = &case.dns else {
         return Observation::new(Status::Ok, "routing_verified");
+    };
+    let Ok(url) = reqwest::Url::parse(&case.url) else {
+        return Observation::new(Status::Unsupported, "scenario_invalid_url");
+    };
+    let Some(host) = url.host_str() else {
+        return Observation::new(Status::Unsupported, "scenario_invalid_url");
     };
     let expected: HashSet<IpAddr> = dns.expected_ips.iter().copied().collect();
     let mut families = HashSet::new();

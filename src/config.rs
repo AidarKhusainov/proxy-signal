@@ -33,6 +33,38 @@ pub struct Scenario {
     pub dns: Option<DnsExpectation>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BalancerScenario {
+    pub id: String,
+    pub url: String,
+    pub balancer_tag: String,
+    pub strategy: BalancerStrategy,
+    pub candidates: Vec<String>,
+    #[serde(default)]
+    pub fallback_tag: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BalancerStrategy {
+    LeastPing,
+    LeastLoad,
+    Random,
+    RoundRobin,
+}
+
+impl BalancerStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LeastPing => "leastPing",
+            Self::LeastLoad => "leastLoad",
+            Self::Random => "random",
+            Self::RoundRobin => "roundRobin",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpectedRoute {
@@ -66,6 +98,8 @@ pub enum Source {
         expected_exit_ips: Vec<IpAddr>,
         #[serde(default)]
         scenarios: Vec<Scenario>,
+        #[serde(default)]
+        balancers: Vec<BalancerScenario>,
     },
     Https {
         id: String,
@@ -76,6 +110,8 @@ pub enum Source {
         expected_exit_ips: Vec<IpAddr>,
         #[serde(default)]
         scenarios: Vec<Scenario>,
+        #[serde(default)]
+        balancers: Vec<BalancerScenario>,
     },
 }
 
@@ -88,6 +124,11 @@ impl Source {
     pub fn scenarios(&self) -> &[Scenario] {
         match self {
             Self::File { scenarios, .. } | Self::Https { scenarios, .. } => scenarios,
+        }
+    }
+    pub fn balancers(&self) -> &[BalancerScenario] {
+        match self {
+            Self::File { balancers, .. } | Self::Https { balancers, .. } => balancers,
         }
     }
     pub fn expected_exit_ips(&self) -> &[IpAddr] {
@@ -144,6 +185,7 @@ impl Config {
         }
         ids.clear();
         let mut total_scenarios = 0;
+        let mut total_balancers = 0;
         for source in &self.sources {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
@@ -161,6 +203,10 @@ impl Config {
             total_scenarios += source.scenarios().len();
             if source.scenarios().len() > 8 || total_scenarios > 64 {
                 bail!("too many scenarios");
+            }
+            total_balancers += source.balancers().len();
+            if source.balancers().len() > 4 || total_balancers > 8 {
+                bail!("too many balancer scenarios");
             }
             let mut scenario_ids = HashSet::new();
             let mut destinations = HashSet::new();
@@ -187,13 +233,7 @@ impl Config {
                 }) {
                     bail!("scenario destination overlaps egress endpoint");
                 }
-                if case.outbound_tag.is_empty()
-                    || case.outbound_tag.len() > 96
-                    || !case
-                        .outbound_tag
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
-                {
+                if !valid_tag(&case.outbound_tag) {
                     bail!("invalid scenario outbound tag");
                 }
                 if let Some(dns) = &case.dns {
@@ -206,6 +246,53 @@ impl Config {
                         bail!("invalid DNS expectation");
                     }
                 }
+            }
+            let mut distinct_candidates = HashSet::new();
+            for case in source.balancers() {
+                if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
+                    bail!("invalid or duplicate balancer scenario id");
+                }
+                let url = validate_https(&case.url)?;
+                let destination = (
+                    url.host_str().unwrap_or("").to_owned(),
+                    url.port_or_known_default(),
+                );
+                if !destinations.insert(destination.clone()) {
+                    bail!("duplicate scenario destination");
+                }
+                if self.endpoints.iter().any(|e| {
+                    let Ok(endpoint_url) = validate_https(&e.url) else {
+                        return false;
+                    };
+                    (
+                        endpoint_url.host_str().unwrap_or("").to_owned(),
+                        endpoint_url.port_or_known_default(),
+                    ) == destination
+                }) {
+                    bail!("balancer destination overlaps egress endpoint");
+                }
+                if !valid_tag(&case.balancer_tag)
+                    || case.candidates.is_empty()
+                    || case.candidates.len() > 8
+                    || case.candidates.iter().any(|tag| !valid_tag(tag))
+                    || case
+                        .fallback_tag
+                        .as_ref()
+                        .is_some_and(|tag| !valid_tag(tag))
+                    || case.fallback_tag.as_ref() == Some(&case.balancer_tag)
+                {
+                    bail!("invalid balancer expectation");
+                }
+                let mut unique = HashSet::new();
+                for tag in &case.candidates {
+                    if !unique.insert(tag) {
+                        bail!("duplicate balancer candidate");
+                    }
+                    distinct_candidates.insert(tag.as_str());
+                }
+            }
+            if distinct_candidates.len() > 8 {
+                bail!("too many distinct balancer candidates");
             }
             if source.expected_exit_ips().len() > 16
                 || source
@@ -292,6 +379,14 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
     }
 }
 
+fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 96
+        && tag
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./:".contains(&b))
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -324,6 +419,7 @@ mod tests {
         let yaml = "kind: file\nid: node\npath: /tmp/profile.json\n";
         let old: Source = serde_yaml::from_str(yaml).unwrap();
         assert!(old.scenarios().is_empty());
+        assert!(old.balancers().is_empty());
         let example = "kind: file\nid: node\npath: /tmp/profile.json\nscenarios:\n  - id: dns-direct\n    url: https://example.org/\n    route: direct\n    outbound_tag: direct\n    dns:\n      server: UDP:1.1.1.1:53\n      expected_ips: [93.184.215.14]\n";
         let new: Source = serde_yaml::from_str(example).unwrap();
         assert_eq!(new.scenarios().len(), 1);
@@ -331,6 +427,15 @@ mod tests {
             &example.replace("route: direct", "route: invented")
         )
         .is_err());
+    }
+
+    #[test]
+    fn optional_balancer_scenarios_parse_strictly() {
+        let sample = "kind: file\nid: node\npath: /tmp/profile.json\nbalancers:\n  - id: preferred\n    url: https://example.com/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [node-a, node-b]\n";
+        let source: Source = serde_yaml::from_str(sample).unwrap();
+        assert_eq!(source.balancers().len(), 1);
+        assert!(serde_yaml::from_str::<Source>(&sample.replace("leastPing", "fastest")).is_err());
+        assert!(serde_yaml::from_str::<Source>(&sample.replace("node-b", "node-a")).is_ok());
     }
 
     #[test]

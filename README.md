@@ -43,7 +43,27 @@ A `direct` route requires a `freedom` outbound, `proxy` a proxy outbound (not `f
 
 If `dns` is specified, Xray must also produce diagnostic DNS records for the domain, exact upstream label, and expected A/AAAA answers. A mismatch is `FAILED`; missing or unparseable engine evidence is `UNKNOWN`. **The HTTP proxy does not force Xray's built-in DNS to resolve the domain.** Remote proxy resolution, system DNS, Xray cache, routing strategy and outbound DNS policy can mean no DNS evidence for this particular check. Such cases remain `UNKNOWN` and do not assert a resolver. DNS server names and answer sets are engine-reported evidence, not an independent packet capture of the DNS exchange. This check does not establish DNS-leak freedom or all upstream fallbacks.
 
-The original `dns`, `routing`, `outbounds`, and rule ordering remain untouched. Temporary loopback inbound and private, size-limited Xray access/error logs are created for the test process only. Logs are not forwarded or printed and are deleted after child cleanup. Scenarios use the same per-profile time budget as egress checks, which run first: when exhausted, remaining scenarios become `UNKNOWN`, not `OK`. Up to 8 scenarios per source / 64 total are allowed; scenario HTTPS host:port pairs must be unique within the source and must not overlap IP-echo endpoints to avoid misattributed log evidence. Use only operator-controlled test targets; no real secrets or production modifications are required. Neither access logs nor this stage prove a multi-hop cascade, balancing choice, physical DNS transport or CDN failover.
+The original `dns`, `routing`, `outbounds`, and rule ordering remain untouched. Temporary loopback inbound and private, size-limited Xray access/error logs are created for the test process only. Logs are not forwarded or printed and are deleted after child cleanup. Scenarios share the same per-profile time budget as egress checks. Balancer candidate and route probes start concurrently after Xray readiness, so a slow egress/scenario probe cannot starve them; timed-out checks remain `UNKNOWN`, not `OK`. Up to 8 scenarios per source / 64 total are allowed; scenario HTTPS host:port pairs must be unique within the source and must not overlap IP-echo endpoints to avoid misattributed log evidence. Use only operator-controlled test targets; no real secrets or production modifications are required. Neither access logs nor this stage prove a multi-hop cascade, balancing choice, physical DNS transport or CDN failover.
+
+## Optional Xray balancer scenarios (stage 3)
+
+Set `balancers` per source to inspect a named balancer in the complete Xray JSON. Existing profiles without these settings are unaffected. Up to 4 balancer scenarios per source, 8 across the configuration and 8 distinct candidates per source are supported. Test URLs must be HTTPS hostnames, unique across domain/balancer scenarios and separate from IP-echo endpoints.
+
+```yaml
+balancers:
+  - id: latency
+    url: https://example.com/
+    balancer_tag: latency
+    strategy: leastPing
+    candidates: [node-a, node-b]   # exact matched outbound tags, not a node count
+    fallback_tag: direct           # omit when profile has no fallbackTag
+```
+
+The static `balancer/<source>/<id>/config` observation checks the balancer tag, strategy, selector prefix expansion, exact candidate set, fallback and whether an observatory/burstObservatory covers the candidates. Xray still validates the full profile at startup. The `/candidates` observation performs separate TLS-verified HTTPS requests through each candidate using temporary loopback HTTP inbounds and inbound-specific routing rules in the **same supervised Xray process**. The main probe inbound retains the original routing decision path; these candidate probes do *not* prove that the balancer chose them. Confirmed partial outages are `DEGRADED`, all confirmed failures are `FAILED`, and missing/ambiguous Xray access records or exhausted time budget are `UNKNOWN`.
+
+The `/route` observation uses the original routing to probe the configured HTTPS URL and requires an exact Xray access-log outbound tag. When attribution is possible, stdout reports `selected_candidate_index` (zero-based index into the configured `candidates` list) without printing raw outbound tags. Per-candidate observation keys similarly use `/candidate/0`, `/candidate/1`, etc. These indices are stable only while the candidate order is unchanged; reordering reassigns existing observation keys, so reset the corresponding candidate incident records before changing that order. When all candidates recover but leastPing policy remains unverified, the aggregate stays `UNKNOWN`, and the previous candidate-outage incident ends with an explicit `UNKNOWN` notice, never a misleading `OK`. A selected `fallback_tag` remains `UNKNOWN` because the access log cannot distinguish fallback from an ordinary choice. For conservative rule attribution, only a first, standalone `full:<test-host>` rule that uses the expected `balancerTag` qualifies; more complex production rule sets return `UNKNOWN/balancer_rule_not_attributable` rather than claiming proof. Even with a confirmed HTTPS request and selected candidate, `leastPing` and `leastLoad` return `UNKNOWN/balancer_policy_unverified`: the access log does not provide the observatory's measured delays or justify the choice. For `random` and `roundRobin` a confirmed candidate and request can verify **one** route selection, not long-term distribution or rotation. The aggregate `balancer/<source>/<id>` is `OK` only when config, all candidate checks and the route check are OK; a proven partial candidate outage stays `DEGRADED` even if route evidence is incomplete. No real switching or failover is asserted.
+
+These diagnostics temporarily add candidate-only routing rules and loopback listeners, not production changes. Only trusted full Xray profiles are supported; log contents are private, bounded and deleted after Xray stops. Allow sufficient `timeout_seconds` for sequential candidate tests. The manual Docker smoke includes a synthetic direct/failed SOCKS candidate pair; it does not verify a remote VPN or leastPing's latency decision.
 
 ## Deploy
 
@@ -83,9 +103,9 @@ Offline tests cover full-profile retention, inbound-dependent unsupported paths,
 
 - **DNS:** optional engine DNS-log upstream/A/AAAA matching is available when a profile actually triggers built-in DNS; the synthetic Docker smoke tests missing evidence, not a positive DNS upstream/answer. Independent packet-level confirmation and DNS-leak testing remain outside this block.
 - **Routing:** optional HTTPS domain cases confirm the selected outbound via Xray access logs; IP-specific routing, client sniffing and full rule-order coverage remain outside this block.
-- **leastPing/balancers:** identify selected candidates and observations, evaluate policy and switching, not just that one candidate works.
+- **leastPing/balancers:** optional candidate HTTPS availability and conservative route-tag evidence are implemented; observer RTTs, actual leastPing policy ranking and automatic switching remain unverified.
 - **Cascades:** verify each hop individually with independent evidence, not just ultimate exit IP.
 - **CDN:** dedicated TLS/SNI/WS/gRPC transport checks, reachability from monitoring locations, and expected CDN edge or fallback path.
 - **Failover:** controlled fault injection inside isolated test executions and evidence of automatic rerouting within a deadline; never modify production nodes or firewall.
 
-All of these require separately defined scenarios and stronger engine/route telemetry. They are intentionally not claimed or implemented in this first PR.
+All of these require separately defined scenarios and stronger engine/route telemetry. Remaining advanced guarantees require controlled test profiles and stronger engine telemetry.

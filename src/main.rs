@@ -1,3 +1,4 @@
+mod balancer;
 mod config;
 mod incident;
 mod probe;
@@ -143,7 +144,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         format!("profile/{}", entry.id()),
                         Observation::new(Status::Unknown, "source_unavailable"),
                     ));
-                    unavailable_scenarios(&mut results, &entry, "source_unavailable");
+                    unavailable_checks(&mut results, &entry, "source_unavailable");
                 }
                 Err(_) => eprintln!("ProxySignal: source_task_error"),
             }
@@ -158,7 +159,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     format!("profile/{}", entry.id()),
                     Observation::new(Status::Unknown, "source_task_error"),
                 ));
-                unavailable_scenarios(&mut results, entry, "source_task_error");
+                unavailable_checks(&mut results, entry, "source_task_error");
             }
         }
     }
@@ -188,15 +189,54 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         })
                         .collect::<Vec<_>>()
                 };
-                let (observation, checks) = if xray::prepare(document.clone(), 9876).is_err() {
+                let unavailable_balancers = |status: Status, code: &'static str| {
+                    entry
+                        .balancers()
+                        .iter()
+                        .flat_map(|case| {
+                            let key = format!("balancer/{}/{}", entry.id(), case.id);
+                            let config = if status == Status::Unsupported {
+                                Observation::new(status, code)
+                            } else {
+                                balancer::inspect(&document, case)
+                            };
+                            let missing = Observation::new(status, code);
+                            let overall = if config.status == Status::Ok {
+                                missing
+                            } else {
+                                config
+                            };
+                            let mut rows = vec![
+                                (format!("{key}/config"), config),
+                                (format!("{key}/candidates"), missing),
+                                (format!("{key}/route"), missing),
+                                (key.clone(), overall),
+                            ];
+                            rows.extend(
+                                case.candidates
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, _)| (candidate_key(&key, index), missing)),
+                            );
+                            rows
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let (observation, checks, balance_checks) = if xray::prepare(document.clone(), 9876)
+                    .is_err()
+                {
                     (
                         Observation::new(Status::Unsupported, "profile_incompatible"),
                         scenario_rows(Status::Unsupported, "profile_incompatible"),
+                        unavailable_balancers(Status::Unsupported, "profile_incompatible"),
                     )
-                } else if targets.iter().all(|(_, ip)| ip.is_none()) && entry.scenarios().is_empty()
+                } else if targets.iter().all(|(_, ip)| ip.is_none())
+                    && entry.scenarios().is_empty()
+                    && entry.balancers().is_empty()
                 {
                     (
                         Observation::new(Status::Unknown, "no_direct_baseline"),
+                        Vec::new(),
                         Vec::new(),
                     )
                 } else {
@@ -205,6 +245,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         &targets,
                         entry.expected_exit_ips(),
                         entry.scenarios(),
+                        entry.balancers(),
                         timeout,
                     )
                     .await
@@ -225,16 +266,46 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                     (format!("scenario/{}/{}", entry.id(), case.id), result)
                                 })
                                 .collect();
+                            let balance_checks = entry
+                                .balancers()
+                                .iter()
+                                .zip(steps.balancers)
+                                .flat_map(|(case, evidence)| {
+                                    let key = format!("balancer/{}/{}", entry.id(), case.id);
+                                    if let Some(index) = evidence.selected_candidate_index {
+                                        println!(
+                                            "target={key} selected_candidate_index={index} proof=xray_access"
+                                        );
+                                    }
+                                    let mut rows = vec![
+                                        (format!("{key}/config"), evidence.config),
+                                        (format!("{key}/candidates"), evidence.candidates),
+                                        (format!("{key}/route"), evidence.route),
+                                        (key.clone(), evidence.overall),
+                                    ];
+                                    rows.extend(
+                                        case.candidates
+                                            .iter()
+                                            .zip(evidence.candidate_details)
+                                            .enumerate()
+                                            .map(|(index, (_, observation))| {
+                                                (candidate_key(&key, index), observation)
+                                            }),
+                                    );
+                                    rows
+                                })
+                                .collect();
                             let observation = if targets.iter().all(|(_, ip)| ip.is_none()) {
                                 Observation::new(Status::Unknown, "no_direct_baseline")
                             } else {
                                 classify(&steps.egress)
                             };
-                            (observation, checks)
+                            (observation, checks, balance_checks)
                         }
                         Err(_) => (
                             Observation::new(Status::Unknown, "xray_runtime_error"),
                             scenario_rows(Status::Unknown, "xray_runtime_error"),
+                            unavailable_balancers(Status::Unknown, "xray_runtime_error"),
                         ),
                     }
                 };
@@ -243,16 +314,18 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     observation,
                     start.elapsed(),
                     checks,
+                    balance_checks,
                 )
             });
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios)) = result {
+            if let Ok((key, observation, elapsed, scenarios, balancers)) = result {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
                 results.push((key, observation));
                 results.extend(scenarios);
+                results.extend(balancers);
             } else {
                 eprintln!("ProxySignal: probe_task_error");
             }
@@ -261,19 +334,39 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             let key = format!("profile/{}", entry.id());
             if !completed.contains(&key) {
                 results.push((key, Observation::new(Status::Unknown, "probe_task_error")));
-                unavailable_scenarios(&mut results, entry, "probe_task_error");
+                unavailable_checks(&mut results, entry, "probe_task_error");
             }
         }
     }
     results
 }
 
-fn unavailable_scenarios(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
+fn candidate_key(balancer_key: &str, index: usize) -> String {
+    format!("{balancer_key}/candidate/{index}")
+}
+
+fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
     for case in entry.scenarios() {
         results.push((
             format!("scenario/{}/{}", entry.id(), case.id),
             Observation::new(Status::Unknown, code),
         ));
+    }
+    for case in entry.balancers() {
+        let key = format!("balancer/{}/{}", entry.id(), case.id);
+        for component in ["config", "candidates", "route"] {
+            results.push((
+                format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        for (index, _) in case.candidates.iter().enumerate() {
+            results.push((
+                candidate_key(&key, index),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        results.push((key, Observation::new(Status::Unknown, code)));
     }
 }
 
@@ -294,6 +387,13 @@ fn classify(steps: &[TargetResult]) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn candidate_observation_keys_never_embed_sensitive_outbound_tags() {
+        let key = candidate_key("balancer/source/latency", 1);
+        assert_eq!(key, "balancer/source/latency/candidate/1");
+        assert!(!key.contains("private-operator-node"));
+    }
+
     #[test]
     fn partial_checks_are_not_ok() {
         assert_eq!(

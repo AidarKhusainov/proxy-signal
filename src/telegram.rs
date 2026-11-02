@@ -49,7 +49,8 @@ impl Sender {
             Status::Ok => "Восстановлено: OK",
             Status::Failed => "Подтверждённый сбой: FAILED",
             Status::Degraded => "Частичная доступность: DEGRADED",
-            _ => return Ok(()),
+            Status::Unknown => "Сбой кандидатов устранён; выбор маршрута не подтверждён: UNKNOWN",
+            Status::Unsupported => return Ok(()),
         };
         let body = serde_json::json!({
             "chat_id": self.chat_id,
