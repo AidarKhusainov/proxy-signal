@@ -99,6 +99,7 @@ pub struct CheckResults {
 pub struct BalancerChecks {
     pub config: Observation,
     pub candidates: Observation,
+    pub candidate_details: Vec<Observation>,
     pub route: Observation,
     pub overall: Observation,
 }
@@ -299,6 +300,9 @@ pub async fn check(
                     return BalancerChecks {
                         config,
                         candidates: Observation::new(Status::Unsupported, "balancer_config_invalid"),
+                        candidate_details: case.candidates.iter()
+                            .map(|_| Observation::new(Status::Unsupported, "balancer_config_invalid"))
+                            .collect(),
                         route: Observation::new(Status::Unsupported, "balancer_config_invalid"),
                         overall: config,
                     };
@@ -316,13 +320,14 @@ pub async fn check(
                         }
                     })
                     .collect::<Vec<_>>();
-                let candidates = balancer::candidate_status(&candidates);
+                let candidate_details = candidates;
+                let candidates = balancer::candidate_status(&candidate_details);
                 let route = balancer::route(
                     case, balancer::attributable(&original, case), attempt.route_http,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
                 );
                 let overall = balancer::overall(config, candidates, route);
-                BalancerChecks { config, candidates, route, overall }
+                BalancerChecks { config, candidates, candidate_details, route, overall }
             })
             .collect();
         CheckResults { egress, scenarios, balancers }
