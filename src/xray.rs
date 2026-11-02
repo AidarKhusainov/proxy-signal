@@ -242,6 +242,21 @@ struct BalancerAttempt {
 // Explicit small scenario lists keep the full-profile executor simple.
 // Avoid a new options layer for this single call site.
 #[allow(clippy::too_many_arguments)]
+/// A fresh leastPing balancer can temporarily have no observatory results.
+/// Without an independently observed choice a failed startup request does not
+/// prove a stable VPN outage. Keep the original routing unchanged.
+fn needs_least_ping_settling(profile: &Value) -> bool {
+    (profile.get("observatory").is_some() || profile.get("burstObservatory").is_some())
+        && profile
+            .pointer("/routing/balancers")
+            .and_then(Value::as_array)
+            .is_some_and(|balancers| {
+                balancers.iter().any(|balancer| {
+                    balancer.pointer("/strategy/type").and_then(Value::as_str) == Some("leastPing")
+                })
+            })
+}
+
 pub async fn check(
     config: Value,
     endpoints: &[(Endpoint, Option<IpAddr>)],
@@ -256,6 +271,7 @@ pub async fn check(
     let port = socket.local_addr()?.port();
     drop(socket);
     let original = config.clone();
+    let settling = needs_least_ping_settling(&original);
     let inbound_tag = diagnostic_inbound_tag(&original).to_owned();
     let mut config = prepare(config, port)?;
     let inspected: Vec<_> = balancers
@@ -437,10 +453,44 @@ pub async fn check(
                 probe::get_exit_ip(endpoint, Some(&proxy), remaining),
             )
             .await;
-            let observation = match response {
-                Ok(value) => probe::compare(value, *direct, allowed),
+            let mut transport_failed = true;
+            let mut observation = match response {
+                Ok(value) => {
+                    transport_failed = value.is_err();
+                    probe::compare(value, *direct, allowed)
+                }
                 Err(_) => TargetResult::Failed,
             };
+            if settling && transport_failed {
+                // Retry only a failed transport while the original leastPing
+                // observatory can initialize. A valid but unexpected exit IP
+                // is confirmed evidence, not a warmup failure to hide.
+                for _ in 0..3 {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining <= Duration::from_secs(11) {
+                        break;
+                    }
+                    sleep(Duration::from_secs(10)).await;
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if let Ok(value) = timeout_at(
+                        deadline,
+                        probe::get_exit_ip(endpoint, Some(&proxy), remaining),
+                    )
+                    .await
+                    {
+                        transport_failed = value.is_err();
+                        observation = probe::compare(value, *direct, allowed);
+                        if !transport_failed {
+                            break;
+                        }
+                    }
+                }
+                if transport_failed {
+                    // No observation proves whether an individual candidate
+                    // failed or observatory had not yet converged.
+                    observation = TargetResult::Unknown;
+                }
+            }
             egress.push(observation);
         }
         let mut attempts: Vec<std::result::Result<bool, Observation>> =
@@ -821,6 +871,22 @@ impl Drop for ManagedChild {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn least_ping_without_observation_is_not_assumed_ready() {
+        let dynamic = serde_json::json!({
+            "burstObservatory": {"subjectSelector": ["node"]},
+            "routing": {"balancers": [{ "tag": "pool", "strategy": {"type": "leastPing"}}]}
+        });
+        assert!(needs_least_ping_settling(&dynamic));
+        assert!(!needs_least_ping_settling(&serde_json::json!({
+            "routing": {"balancers": [{"strategy": {"type": "leastPing"}}]}
+        })));
+        assert!(!needs_least_ping_settling(&serde_json::json!({
+            "burstObservatory": {},
+            "routing": {"balancers": [{"strategy": {"type": "roundRobin"}}]}
+        })));
+    }
+
     use super::*;
 
     #[cfg(target_os = "linux")]
