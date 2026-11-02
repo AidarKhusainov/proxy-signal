@@ -36,6 +36,18 @@ sources:
     #   - id: multi-hop
     #     url: https://example.net/
     #     outbounds: [entry, relay, exit]  # exact outbound tags in dialer order
+    # Controlled loopback SOCKS failover (synthetic lab profile ONLY).
+    # No remote node is ever impaired. The primary SOCKS outbound must
+    # reference 127.0.0.1:20001 and the balancer must use leastPing.
+    # failover:
+    #   - id: lab-switch
+    #     url: https://example.com/
+    #     balancer_tag: pool
+    #     primary_tag: primary
+    #     alternatives: [backup]
+    #     fallback_tag: backup
+    #     control_port: 20001
+    #     restore_primary: true
     # Optional CDN/XHTTP probe; endpoint status is independent from HTTPS
     # through the configured VPN outbound, and CDN route stays UNKNOWN.
     # cdn:
