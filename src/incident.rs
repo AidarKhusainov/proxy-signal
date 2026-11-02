@@ -136,18 +136,34 @@ impl State {
                 // Candidate recovery is not evidence of a verified leastPing
                 // decision. Retire only a confirmed candidate outage, with an
                 // UNKNOWN notice rather than a false OK/recovery message.
-                if o.status == Status::Unknown
+                let active_code = record.active_code.as_deref().or_else(|| {
+                    (record.last_status == record.active).then_some(record.last_code.as_str())
+                });
+                let balancer_recovered = o.status == Status::Unknown
                     && o.code == "balancer_candidates_healthy_route_unverified"
                     && matches!(
-                        record.active_code.as_deref().or_else(|| {
-                            (record.last_status == record.active)
-                                .then_some(record.last_code.as_str())
-                        }),
+                        active_code,
                         Some("balancer_partial_candidates" | "balancer_all_candidates_failed")
-                    )
-                {
+                    );
+                // The prior version used cascade_connection_failed only for
+                // verified HTTPS failures: hop attestation always returned UNKNOWN.
+                // New versions distinguish HTTPS failure from a failed hop check.
+                let cascade_recovered = o.status == Status::Unknown
+                    && o.code == "cascade_https_healthy_hops_unverified"
+                    && matches!(
+                        active_code,
+                        Some("cascade_https_failed" | "cascade_connection_failed")
+                    );
+                let cdn_recovered = o.status == Status::Unknown
+                    && o.code == "cdn_endpoint_tunnel_healthy_route_unverified"
+                    && matches!(
+                        active_code,
+                        Some("cdn_endpoint_failed" | "cdn_tunnel_failed" | "cdn_endpoint_and_tunnel_failed")
+                    );
+                if balancer_recovered || cascade_recovered || cdn_recovered {
                     record.active = None;
                     record.active_code = None;
+                    // Retire only the proven failure; never announce complete OK.
                     notify = Some(Status::Unknown);
                 }
             }
@@ -291,6 +307,52 @@ mod tests {
         }
         total_failure.observe(key, recovered, true);
         assert_eq!(total_failure.pending[1].status, Status::Unknown);
+    }
+
+    #[test]
+    fn cascade_https_recovery_retires_only_verified_connection_failures() {
+        for failure_code in ["cascade_https_failed", "cascade_connection_failed"] {
+            let mut state = State::default();
+            let key = "cascade/source/chain";
+            for _ in 0..2 {
+                state.observe(key, Observation::new(Status::Failed, failure_code), true);
+            }
+            state.observe(key, Observation::new(Status::Unknown, "cascade_incomplete_evidence"), true);
+            assert_eq!(state.pending.len(), 1);
+            state.observe(key, Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"), true);
+            assert_eq!(state.pending.len(), 2);
+            assert_eq!(state.pending[1].status, Status::Unknown);
+            assert_eq!(state.records[key].active, None);
+            state.observe(key, Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"), true);
+            assert_eq!(state.pending.len(), 2);
+        }
+        let mut hop_failure = State::default();
+        let key = "cascade/source/chain";
+        for _ in 0..2 {
+            hop_failure.observe(key, Observation::new(Status::Failed, "cascade_hops_failed"), true);
+        }
+        hop_failure.observe(key, Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"), true);
+        assert_eq!(hop_failure.pending.len(), 1);
+        assert_eq!(hop_failure.records[key].active, Some(Status::Failed));
+    }
+
+    #[test]
+    fn cdn_recovery_requires_endpoint_and_tunnel_evidence() {
+        let key = "cdn/source/edge";
+        let mut state = State::default();
+        for _ in 0..2 {
+            state.observe(key, Observation::new(Status::Degraded, "cdn_endpoint_failed"), true);
+        }
+        state.observe(key, Observation::new(Status::Unknown, "cdn_incomplete_evidence"), true);
+        assert_eq!(state.pending.len(), 1);
+        state.observe(key, Observation::new(Status::Unknown, "cdn_endpoint_tunnel_healthy_route_unverified"), true);
+        assert_eq!(state.pending[1].status, Status::Unknown);
+        let mut route = State::default();
+        for _ in 0..2 {
+            route.observe(key, Observation::new(Status::Failed, "cdn_route_failed"), true);
+        }
+        route.observe(key, Observation::new(Status::Unknown, "cdn_endpoint_tunnel_healthy_route_unverified"), true);
+        assert_eq!(route.pending.len(), 1);
     }
 
     #[test]
