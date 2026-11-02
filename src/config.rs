@@ -358,9 +358,9 @@ impl Config {
                 bail!("too many profiles");
             }
         }
-        ids.clear();
+        let mut effective_ids = HashSet::new();
         for source in self.sources.iter().flat_map(Source::expanded) {
-            if !ids.insert(source.id().to_owned()) {
+            if !effective_ids.insert(source.id().to_owned()) {
                 bail!("duplicate effective profile id");
             }
             total_scenarios += source.scenarios().len();
