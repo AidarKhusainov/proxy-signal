@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn selected_profiles_are_validated_as_independent_sources() {
-        let base = "version: 1\\ninterval_seconds: 300\\ntimeout_seconds: 20\\nparallelism: 2\\nstate_file: /tmp/state.json\\nendpoints:\\n  - { id: ip, url: https://example.com/ip }\\nsources:\\n  - id: happ\\n    kind: https\\n    url: https://subscription.example.org/data\\n    profiles:\\n      - { id: one, remarks: One }\\n      - { id: two, remarks: Two }\\n";
+        let base = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 2\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.com/ip }\nsources:\n  - id: happ\n    kind: https\n    url: https://subscription.example.org/data\n    profiles:\n      - { id: one, remarks: One }\n      - { id: two, remarks: Two }\n";
         let parsed: Config = serde_yaml::from_str(base).unwrap();
         assert!(parsed.validate().is_ok());
         assert_eq!(
@@ -775,7 +775,7 @@ mod tests {
             base.replace("remarks: Two", "remarks: ''"),
             base.replace("      - { id: two, remarks: Two }", "      - { id: two, remarks: Two, scenarios: [{ id: broken, url: http://example.org/, route: proxy, outbound_tag: a }] }"),
             base.replace("      - { id: two, remarks: Two }", "      - { id: two, remarks: Two, expected_exit_ips: [127.0.0.1] }"),
-            base.replace("    profiles:", "    expected_exit_ips: [1.1.1.1]\\n    profiles:"),
+            base.replace("    profiles:", "    expected_exit_ips: [1.1.1.1]\n    profiles:"),
         ] {
             let parsed: Config = serde_yaml::from_str(&invalid).unwrap();
             assert!(parsed.validate().is_err(), "invalid profile mapping accepted");
