@@ -119,6 +119,27 @@ pub struct DnsExpectation {
     pub expected_ips: Vec<IpAddr>,
 }
 
+/// Explicit stable identity for one full JSON object in an HTTPS array.
+/// "remarks" is an exact selector only; it is never used in observation keys.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSelection {
+    pub id: String,
+    pub remarks: String,
+    #[serde(default)]
+    pub expected_exit_ips: Vec<IpAddr>,
+    #[serde(default)]
+    pub scenarios: Vec<Scenario>,
+    #[serde(default)]
+    pub balancers: Vec<BalancerScenario>,
+    #[serde(default)]
+    pub cascades: Vec<CascadeScenario>,
+    #[serde(default)]
+    pub cdn: Vec<CdnScenario>,
+    #[serde(default)]
+    pub failover: Vec<FailoverScenario>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
@@ -151,6 +172,8 @@ pub enum Source {
         #[serde(default)]
         headers: std::collections::BTreeMap<String, PathBuf>,
         #[serde(default)]
+        profiles: Vec<ProfileSelection>,
+        #[serde(default)]
         expected_exit_ips: Vec<IpAddr>,
         #[serde(default)]
         scenarios: Vec<Scenario>,
@@ -166,6 +189,34 @@ pub enum Source {
 }
 
 impl Source {
+    pub fn profiles(&self) -> &[ProfileSelection] {
+        match self {
+            Self::Https { profiles, .. } => profiles,
+            Self::File { .. } => &[],
+        }
+    }
+
+    /// Runtime-only entries. A selected profile carries its own checks and a
+    /// stable namespaced ID, never a position from the subscription array.
+    pub fn expanded(&self) -> Vec<Self> {
+        match self {
+            Self::Https { id, profiles, .. } if !profiles.is_empty() => profiles
+                .iter()
+                .map(|profile| Self::File {
+                    id: format!("{id}/{}", profile.id),
+                    path: PathBuf::new(),
+                    expected_exit_ips: profile.expected_exit_ips.clone(),
+                    scenarios: profile.scenarios.clone(),
+                    balancers: profile.balancers.clone(),
+                    cascades: profile.cascades.clone(),
+                    cdn: profile.cdn.clone(),
+                    failover: profile.failover.clone(),
+                })
+                .collect(),
+            _ => vec![self.clone()],
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
             Self::File { id, .. } | Self::Https { id, .. } => id,
@@ -255,11 +306,12 @@ impl Config {
         let mut total_cdn = 0;
         let mut total_failover = 0;
         let mut controlled_ports = HashSet::new();
+        let mut total_profiles = 0;
         for source in &self.sources {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
             }
-            if let Source::Https { url, headers, .. } = source {
+            if let Source::Https { url, headers, profiles, .. } = source {
                 validate_https(url)?;
                 if headers.len() > 8 {
                     bail!("too many authorization headers");
@@ -268,6 +320,35 @@ impl Config {
                     reqwest::header::HeaderName::from_bytes(name.as_bytes())
                         .context("invalid header name")?;
                 }
+                if !profiles.is_empty() && (!source.scenarios().is_empty()
+                    || !source.balancers().is_empty() || !source.cascades().is_empty()
+                    || !source.cdn().is_empty() || !source.failover().is_empty()
+                    || !source.expected_exit_ips().is_empty()) {
+                    bail!("checks belong to individual selected profiles");
+                }
+                if profiles.len() > 16 {
+                    bail!("too many selected profiles");
+                }
+                let mut profile_ids = HashSet::new();
+                let mut remarks = HashSet::new();
+                for profile in profiles {
+                    if !valid_id(&profile.id) || !profile_ids.insert(&profile.id)
+                        || profile.remarks.is_empty() || profile.remarks.len() > 256
+                        || profile.remarks.chars().any(char::is_control)
+                        || !remarks.insert(&profile.remarks) {
+                        bail!("invalid or duplicate profile mapping");
+                    }
+                }
+            }
+            total_profiles += source.profiles().len().max(1);
+            if total_profiles > 32 {
+                bail!("too many profiles");
+            }
+        }
+        ids.clear();
+        for source in self.sources.iter().flat_map(Source::expanded) {
+            if !ids.insert(source.id().to_owned()) {
+                bail!("duplicate effective profile id");
             }
             total_scenarios += source.scenarios().len();
             if source.scenarios().len() > 8 || total_scenarios > 64 {
