@@ -158,7 +158,7 @@ mod tests {
     fn loads_authorization_and_hwid_headers_from_files_without_mutating_them() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret");
-        std::fs::write(&path, "test-device-value\\n").unwrap();
+        std::fs::write(&path, "test-device-value\n").unwrap();
         let headers = BTreeMap::from([
             ("X-HWID".to_string(), path.clone()),
             ("User-Agent".to_string(), path.clone()),
@@ -170,15 +170,15 @@ mod tests {
         assert_eq!(values.get("Accept").unwrap(), "test-device-value");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "test-device-value\\n"
+            "test-device-value\n"
         );
-        std::fs::write(&path, "bad\\nvalue").unwrap();
+        std::fs::write(&path, "bad\nvalue").unwrap();
         assert!(read_headers(&headers).is_err());
     }
 
     #[test]
     fn select_full_documents_by_explicit_remarks_in_any_order() {
-        let source: Source = serde_yaml::from_str("kind: https\\nid: happ\\nurl: https://example.org/sub\\nprofiles:\\n  - { id: sweden, remarks: Sweden }\\n  - { id: germany, remarks: Germany }\\n").unwrap();
+        let source: Source = serde_yaml::from_str("kind: https\nid: happ\nurl: https://example.org/sub\nprofiles:\n  - { id: sweden, remarks: Sweden }\n  - { id: germany, remarks: Germany }\n").unwrap();
         let original = serde_json::json!({"remarks":"Sweden","inbounds":[{"sniffing":{"enabled":true}}],"dns":{"servers":["1.1.1.1"]},"routing":{"rules":[]},"outbounds":[{"protocol":"vless"}],"observatory":{"subjectSelector":["a"]}});
         let other = serde_json::json!({"remarks":"Germany","outbounds":[{"protocol":"vless"}]});
         for array in [
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn missing_duplicate_and_invalid_entries_never_become_ok() {
-        let source: Source = serde_yaml::from_str("kind: https\\nid: happ\\nurl: https://example.org/sub\\nprofiles:\\n  - { id: first, remarks: A }\\n  - { id: second, remarks: B }\\n").unwrap();
+        let source: Source = serde_yaml::from_str("kind: https\nid: happ\nurl: https://example.org/sub\nprofiles:\n  - { id: first, remarks: A }\n  - { id: second, remarks: B }\n").unwrap();
         let a = serde_json::json!({"remarks":"A","outbounds":[{"protocol":"vless"}]});
         let entries = select(&source, serde_json::json!([a.clone()])).unwrap();
         assert!(entries[0].document.is_some());
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn legacy_single_object_remains_supported() {
         let source: Source =
-            serde_yaml::from_str("kind: file\\nid: original\\npath: /tmp/profile.json\\n").unwrap();
+            serde_yaml::from_str("kind: file\nid: original\npath: /tmp/profile.json\n").unwrap();
         let document = serde_json::json!({"outbounds":[{"protocol":"vless"}]});
         let entries = select(&source, document.clone()).unwrap();
         assert_eq!(entries[0].source.id(), "original");
