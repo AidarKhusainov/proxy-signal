@@ -65,6 +65,25 @@ The `/route` observation uses the original routing to probe the configured HTTPS
 
 These diagnostics temporarily add candidate-only routing rules and loopback listeners, not production changes. Only trusted full Xray profiles are supported; log contents are private, bounded and deleted after Xray stops. Allow sufficient `timeout_seconds` for sequential candidate tests. The manual Docker smoke includes a synthetic direct/failed SOCKS candidate pair; it does not verify a remote VPN or leastPing's latency decision.
 
+## Optional Xray cascade scenarios (stage 3)
+
+Set `cascades` under a source to check one ordered chain in the **original full JSON**. The `outbounds` list names the outbound selected by routing first, then every successive dialer; it is not a list of interchangeable nodes. Chains of 2–8 unique outbound tags are supported, with at most 4 scenarios per source / 8 total. IDs and HTTPS destination host:port pairs must not collide with other scenarios or egress endpoints.
+
+```yaml
+cascades:
+  - id: two-hop
+    url: https://example.com/
+    outbounds: [entry, relay]  # entry's dialerProxy must point to relay
+```
+
+The `cascade/<source>/<id>/config` check validates unique outbound tags, protocol eligibility, **each link in its expected order**, a terminating final outbound, and contradictory dialer declarations. Cycles, missing hops and unexpected tails never pass. Xray `26.10.21` **removed** `proxySettings` and requires `streamSettings.sockopt.dialerProxy`. Legacy `proxySettings.tag` links are structurally inspected but explicitly `UNSUPPORTED/cascade_proxy_settings_removed` under the pinned runtime, not silently converted. The monitor never rewrites the chain.
+
+The `/https` check makes a TLS-verified request through the unmodified routing path in the supervised Xray process. It requires the **first exact `full:<hostname>` routing rule** to select the chain's first outbound and an unambiguous Xray access record for that inbound and destination. Wrong selection or confirmed HTTPS failure is `FAILED`, missing/ambiguous evidence is `UNKNOWN`. Complex rules are conservatively `UNKNOWN` even when the HTTPS request succeeds.
+
+The `/hops` result is **`UNKNOWN/cascade_hops_unverified`**: normal Xray access records prove the selected outbound but cannot attest each subsequent physical hop or its order. The aggregate stays `UNKNOWN` when configuration and HTTPS are both `OK` but hop proof is absent; a confirmed failed connection is `FAILED`. `OK` is reserved for complete proof and is not currently achievable for a general live profile without independent trusted per-hop evidence. Neither egress-IP differences nor the static dialer graph can replace that evidence. These tests do not measure hop latency, prove geographic location, simulate failures or validate CDN.
+
+For an isolated manual integration test with two disposable Xray SOCKS relays and a real HTTPS request, build the image and run `sh scripts/smoke-cascade-docker.sh`. It creates an ephemeral Docker bridge without public ports, uses nonroot read-only resource-limited containers, inspects relay-side access logs, and removes everything afterward. Its **controlled test-side observations** verify the synthetic path but are deliberately not used as production telemetry. Do not run the script against a shared host without an approved preflight.
+
 ## Deploy
 
 ```sh
@@ -82,7 +101,7 @@ The included `examples/example.json` contains **only a direct outbound** and int
 
 One cycle can be run manually with `proxy-signal /etc/proxy-signal/config.yaml --once` (nonzero exit if any check is not `OK`). Defaults/limits are explicit in YAML: interval 30–86400 seconds, per-profile deadline 5–60 seconds, concurrency 1–4, at most 32 sources and 3 echo endpoints. Profile inputs are limited to 512 KiB, echo bodies to 64 bytes, response redirects disabled, and TLS certificates verified. Process output is suppressed to prevent credential leakage. Container has read-only root, no privileges, limits on processes, memory, CPU and temporary disk. The persistent `/data` directory is pre-owned by the unprivileged UID, including on first volume creation. Persist `/data` to retain incidents; never run two replicas sharing the same state file.
 
-Incidents require **two matching consecutive** `FAILED` or `DEGRADED` outcomes per `source/<id>` or `profile/<id>`. Only an `OK` observation closes an active incident. `UNKNOWN` and `UNSUPPORTED` never close one. Telegram alerts are queued durably before sending (up to 128 pending transitions), retried next cycle on delivery failure, and sent once per transition (at-least-once delivery; duplicates are possible if the process crashes after Telegram accepts a message but before the acknowledgement is persisted). Durable history is limited to incident state and pending alerts, not per-check time series. This release does not implement retention/reporting of historical observations.
+Incidents require **two matching consecutive** `FAILED` or `DEGRADED` outcomes per `source/<id>` or `profile/<id>`. An incident recovers only when its specific evidence is sufficient; an unknown cascade never produces an OK recovery. `UNKNOWN` and `UNSUPPORTED` never close one. Telegram alerts are queued durably before sending (up to 128 pending transitions), retried next cycle on delivery failure, and sent once per transition (at-least-once delivery; duplicates are possible if the process crashes after Telegram accepts a message but before the acknowledgement is persisted). Durable history is limited to incident state and pending alerts, not per-check time series. This release does not implement retention/reporting of historical observations.
 
 ## Development and acceptance
 
@@ -97,14 +116,14 @@ docker compose run --rm proxy-signal /etc/proxy-signal/config.yaml --once
 
 The Docker build uses the checked-in `Cargo.lock` with `--locked`, digest-pinned Rust, Debian and official Xray base images, and a pinned trust store. This fixes dependency and base-image resolution for repeatable builds; it does not promise bit-identical binaries across different host platforms or environments.
 
-Offline tests cover full-profile retention, inbound-dependent unsupported paths, direct-egress false positives, multi-endpoint aggregation, incident confirmation and persistence. Run `sh scripts/smoke-docker.sh` on a host with Docker and outbound HTTPS. The synthetic smoke checks a **deliberately failed** VLESS egress, plus live Xray access-log evidence for a working direct route, blocked route, intentionally wrong route and missing DNS evidence. Expected scenario outcomes are `OK`, `OK`, `FAILED` and `UNKNOWN` respectively. The test deliberately uses no VPN credentials. A real positive VPN check with a non-production profile and a **different externally observable exit IP** is still required before production use.
+Offline tests cover full-profile retention, inbound-dependent unsupported paths, direct-egress false positives, multi-endpoint aggregation, incident confirmation and persistence. Run `sh scripts/smoke-docker.sh` on a host with Docker and outbound HTTPS. For the separate controlled two-hop test, run `sh scripts/smoke-cascade-docker.sh`. The synthetic smoke checks a **deliberately failed** VLESS egress, plus live Xray access-log evidence for a working direct route, blocked route, intentionally wrong route and missing DNS evidence. Expected scenario outcomes are `OK`, `OK`, `FAILED` and `UNKNOWN` respectively. The test deliberately uses no VPN credentials. A real positive VPN check with a non-production profile and a **different externally observable exit IP** is still required before production use.
 
 ## Additional coverage needed
 
 - **DNS:** optional engine DNS-log upstream/A/AAAA matching is available when a profile actually triggers built-in DNS; the synthetic Docker smoke tests missing evidence, not a positive DNS upstream/answer. Independent packet-level confirmation and DNS-leak testing remain outside this block.
 - **Routing:** optional HTTPS domain cases confirm the selected outbound via Xray access logs; IP-specific routing, client sniffing and full rule-order coverage remain outside this block.
 - **leastPing/balancers:** optional candidate HTTPS availability and conservative route-tag evidence are implemented; observer RTTs, actual leastPing policy ranking and automatic switching remain unverified.
-- **Cascades:** verify each hop individually with independent evidence, not just ultimate exit IP.
+- **Cascades:** ordered graph and real HTTPS checks are available. Independently authenticated hop traversal remains unverified outside controlled tests.
 - **CDN:** dedicated TLS/SNI/WS/gRPC transport checks, reachability from monitoring locations, and expected CDN edge or fallback path.
 - **Failover:** controlled fault injection inside isolated test executions and evidence of automatic rerouting within a deadline; never modify production nodes or firewall.
 
