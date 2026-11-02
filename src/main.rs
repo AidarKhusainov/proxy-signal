@@ -8,7 +8,6 @@ mod telegram;
 mod xray;
 
 use crate::{
-    balancer,
     config::{Config, Source},
     incident::{Observation, State, Status},
     probe::TargetResult,
