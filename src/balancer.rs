@@ -212,13 +212,23 @@ pub fn route(
     http_ok: Option<bool>,
     access: Option<&str>,
 ) -> Observation {
+    route_for_inbound(case, attributable, http_ok, access, "proxy-signal-probe-in")
+}
+
+pub fn route_for_inbound(
+    case: &BalancerScenario,
+    attributable: bool,
+    http_ok: Option<bool>,
+    access: Option<&str>,
+    inbound_tag: &str,
+) -> Observation {
     if !attributable {
         return Observation::new(Status::Unknown, "balancer_rule_not_attributable");
     }
     let (Some(http_ok), Some(access)) = (http_ok, access) else {
         return Observation::new(Status::Unknown, "balancer_route_unobserved");
     };
-    let actual = match scenario::observed_outbound(&case.url, "proxy-signal-probe-in", access) {
+    let actual = match scenario::observed_outbound(&case.url, inbound_tag, access) {
         Ok(tag) => tag,
         Err(_) => return Observation::new(Status::Unknown, "balancer_route_unobserved"),
     };
