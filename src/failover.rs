@@ -399,8 +399,7 @@ async fn run(
         for ((tag, inbound, _), response) in candidates.iter().zip(responses) {
             match (response, access.as_deref()) {
                 (Some(ok), Some(log))
-                    if scenario::observed_outbound(&case.url, inbound, log)
-                        == Ok(tag.as_str()) =>
+                    if scenario::observed_outbound(&case.url, inbound, log) == Ok(tag.as_str()) =>
                 {
                     if ok {
                         successes += 1;
@@ -563,7 +562,8 @@ mod tests {
             &mut cursor,
             Instant::now(),
             Phase::Backup,
-        ).await;
+        )
+        .await;
         assert_eq!(result.status, Status::Unknown);
     }
 
