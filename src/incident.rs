@@ -164,7 +164,13 @@ impl State {
                                 | "cdn_endpoint_and_tunnel_failed"
                         )
                     );
-                if balancer_recovered || cascade_recovered || cdn_recovered {
+                let failover_recovered = o.status == Status::Unknown
+                    && o.code == "failover_routes_healthy_switch_unverified"
+                    && matches!(
+                        active_code,
+                        Some("failover_primary_failed" | "failover_backups_failed")
+                    );
+                if balancer_recovered || cascade_recovered || cdn_recovered || failover_recovered {
                     record.active = None;
                     record.active_code = None;
                     // Retire only the proven failure; never announce complete OK.
@@ -409,6 +415,46 @@ mod tests {
             true,
         );
         assert_eq!(route.pending.len(), 1);
+    }
+
+    #[test]
+    fn failover_recovery_retires_only_proven_route_failures() {
+        let key = "failover/source/lab";
+        let recovery = Observation::new(
+            Status::Unknown,
+            "failover_routes_healthy_switch_unverified",
+        );
+        for code in ["failover_primary_failed", "failover_backups_failed"] {
+            let mut state = State::default();
+            for _ in 0..2 {
+                state.observe(key, Observation::new(Status::Failed, code), true);
+            }
+            assert_eq!(state.pending.len(), 1);
+            state.observe(
+                key,
+                Observation::new(Status::Unknown, "failover_incomplete_evidence"),
+                true,
+            );
+            assert_eq!(state.pending.len(), 1);
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("state.json");
+            state.persist(&file).unwrap();
+            let mut restored = State::load(&file).unwrap();
+            restored.observe(key, recovery, true);
+            restored.observe(key, recovery, true);
+            assert_eq!(restored.pending.len(), 2);
+            assert_eq!(restored.pending[1].status, Status::Unknown);
+            assert_eq!(restored.records[key].active, None);
+        }
+        for code in ["failover_switch_failed", "failover_recovery_failed"] {
+            let mut state = State::default();
+            for _ in 0..2 {
+                state.observe(key, Observation::new(Status::Failed, code), true);
+            }
+            state.observe(key, recovery, true);
+            assert_eq!(state.pending.len(), 1);
+            assert_eq!(state.records[key].active, Some(Status::Failed));
+        }
     }
 
     #[test]
