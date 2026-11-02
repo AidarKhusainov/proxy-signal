@@ -91,7 +91,7 @@ for evidence in \
     'target=cascade/cascade-smoke/ordered/config status=OK evidence=cascade_config_valid' \
     'target=cascade/cascade-smoke/ordered/https status=OK evidence=cascade_https_verified' \
     'target=cascade/cascade-smoke/ordered/hops status=UNKNOWN evidence=cascade_hops_unverified' \
-    'target=cascade/cascade-smoke/ordered status=UNKNOWN evidence=cascade_incomplete_evidence'
+    'target=cascade/cascade-smoke/ordered status=UNKNOWN evidence=cascade_https_healthy_hops_unverified'
 do
     case "$output" in
         *"$evidence"*) ;;
