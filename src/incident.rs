@@ -93,7 +93,7 @@ impl State {
         }
         let data = fs::read(path).context("state_read")?;
         let state: State = serde_json::from_slice(&data).context("state_invalid")?;
-        if state.version != 1 || state.pending.len() > 128 || state.records.len() > 128 {
+        if state.version != 1 || state.pending.len() > 128 || state.records.len() > 256 {
             anyhow::bail!("state_version_or_limits");
         }
         Ok(state)
