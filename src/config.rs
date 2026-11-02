@@ -444,10 +444,12 @@ impl Config {
                 );
                 if !destinations.insert(destination.clone())
                     || self.endpoints.iter().any(|e| {
-                        validate_https(&e.url).is_ok_and(|other| (
-                            other.host_str().unwrap_or("").to_owned(),
-                            other.port_or_known_default(),
-                        ) == destination)
+                        validate_https(&e.url).is_ok_and(|other| {
+                            (
+                                other.host_str().unwrap_or("").to_owned(),
+                                other.port_or_known_default(),
+                            ) == destination
+                        })
                     })
                 {
                     bail!("failover destination overlaps existing check");
@@ -456,9 +458,16 @@ impl Config {
                     || !valid_tag(&case.primary_tag)
                     || case.alternatives.is_empty()
                     || case.alternatives.len() > 4
-                    || case.alternatives.iter().any(|tag| !valid_tag(tag) || tag == &case.primary_tag)
-                    || case.alternatives.iter().collect::<HashSet<_>>().len() != case.alternatives.len()
-                    || case.fallback_tag.as_ref().is_some_and(|tag| !case.alternatives.contains(tag))
+                    || case
+                        .alternatives
+                        .iter()
+                        .any(|tag| !valid_tag(tag) || tag == &case.primary_tag)
+                    || case.alternatives.iter().collect::<HashSet<_>>().len()
+                        != case.alternatives.len()
+                    || case
+                        .fallback_tag
+                        .as_ref()
+                        .is_some_and(|tag| !case.alternatives.contains(tag))
                     || case.control_port < 1024
                     || !controlled_ports.insert(case.control_port)
                 {
@@ -646,7 +655,10 @@ mod tests {
         let parsed: Source = serde_yaml::from_str(sample).unwrap();
         assert_eq!(parsed.failover().len(), 1);
         assert!(parsed.failover()[0].restore_primary);
-        assert!(serde_yaml::from_str::<Source>(&sample.replace("control_port:", "remote_control_port:")).is_err());
+        assert!(serde_yaml::from_str::<Source>(
+            &sample.replace("control_port:", "remote_control_port:")
+        )
+        .is_err());
     }
 
     #[test]
