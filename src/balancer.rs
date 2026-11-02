@@ -13,7 +13,7 @@ pub fn inspect(profile: &Value, case: &BalancerScenario) -> Observation {
     };
     let matches: Vec<_> = balancers
         .iter()
-        .filter(|b| b.get("tag").and_then(Value::as_str) == Some(&case.balancer_tag))
+        .filter(|b| b.get("tag").and_then(Value::as_str) == Some(case.balancer_tag.as_str()))
         .collect();
     if matches.len() != 1 {
         return Observation::new(Status::Failed, "balancer_tag_not_unique");
@@ -29,7 +29,7 @@ pub fn inspect(profile: &Value, case: &BalancerScenario) -> Observation {
     if balancer.get("fallbackTag").and_then(Value::as_str) != case.fallback_tag.as_deref() {
         return Observation::new(Status::Failed, "balancer_fallback_mismatch");
     }
-    let Some(selectors) = selectors(balancer.get("selector")) else {
+    let Some(prefixes) = selectors(balancer.get("selector")) else {
         return Observation::new(Status::Unsupported, "balancer_invalid_selector");
     };
     let Some(outbounds) = profile.get("outbounds").and_then(Value::as_array) else {
@@ -47,7 +47,7 @@ pub fn inspect(profile: &Value, case: &BalancerScenario) -> Observation {
     let actual: HashSet<_> = all_tags
         .iter()
         .copied()
-        .filter(|tag| selectors.iter().any(|prefix| tag.starts_with(prefix)))
+        .filter(|tag| prefixes.iter().any(|prefix| tag.starts_with(prefix)))
         .collect();
     let expected: HashSet<_> = case.candidates.iter().map(String::as_str).collect();
     if actual != expected {
@@ -143,7 +143,7 @@ pub fn attributable(profile: &Value, case: &BalancerScenario) -> bool {
         && object.get("balancerTag").and_then(Value::as_str) == Some(&case.balancer_tag)
         && object.keys().all(|key| matches!(key.as_str(), "type" | "domain" | "balancerTag" | "ruleTag"))
         && rule.get("domain").and_then(Value::as_array).is_some_and(|v| {
-            v.len() == 1 && v[0].as_str() == Some(&format!("full:{host}"))
+            v.len() == 1 && v[0].as_str().is_some_and(|domain| domain == format!("full:{host}"))
         })
 }
 
