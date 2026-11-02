@@ -5,6 +5,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::time::Duration;
+use tokio::time::Instant;
 
 pub struct EndpointChecks {
     pub dns: Observation,
@@ -31,6 +32,7 @@ fn unavailable(status: Status, code: &'static str) -> Observation {
 /// addresses, enforce normal certificate verification, and never follow redirects.
 pub async fn endpoint(case: &CdnScenario, budget: Duration) -> EndpointChecks {
     let unknown = unavailable(Status::Unknown, "cdn_endpoint_not_tested");
+    let deadline = Instant::now() + budget;
     let (host, addresses) = match config::public_resolution(&case.endpoint_url, budget).await {
         Ok(resolved) => resolved,
         Err(_) => {
@@ -43,10 +45,19 @@ pub async fn endpoint(case: &CdnScenario, budget: Duration) -> EndpointChecks {
         }
     };
     let dns = unavailable(Status::Ok, "cdn_public_dns_resolved");
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return EndpointChecks {
+            dns,
+            tls: unknown,
+            http: unknown,
+            overall: unavailable(Status::Unknown, "cdn_endpoint_timeout"),
+        };
+    }
     let client = match reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(budget)
+        .timeout(remaining)
         .resolve_to_addrs(&host, &addresses)
         .build()
     {
@@ -60,7 +71,7 @@ pub async fn endpoint(case: &CdnScenario, budget: Duration) -> EndpointChecks {
             };
         }
     };
-    match tokio::time::timeout(budget, client.get(&case.endpoint_url).send()).await {
+    match tokio::time::timeout(remaining, client.get(&case.endpoint_url).send()).await {
         Ok(Ok(response)) => {
             // A valid HTTPS response means TLS peer verification completed.
             let http = http_status(response.status().as_u16(), case.expected_http_status);
@@ -75,27 +86,28 @@ pub async fn endpoint(case: &CdnScenario, budget: Duration) -> EndpointChecks {
                 },
             }
         }
-        Ok(Err(error)) => {
-            // reqwest cannot reliably distinguish TLS failure from TCP/connect
-            // failure here. Never claim a specific certificate diagnosis.
-            let tls = if error.is_connect() {
-                unavailable(Status::Failed, "cdn_tls_or_connect_failed")
-            } else {
-                unavailable(Status::Unknown, "cdn_tls_unverified")
-            };
-            EndpointChecks {
-                dns,
-                tls,
-                http: unknown,
-                overall: unavailable(Status::Failed, "cdn_endpoint_unreachable"),
-            }
-        }
+        Ok(Err(error)) => request_failed(dns, error.is_connect()),
         Err(_) => EndpointChecks {
             dns,
             tls: unknown,
             http: unknown,
             overall: unavailable(Status::Unknown, "cdn_endpoint_timeout"),
         },
+    }
+}
+
+fn request_failed(dns: Observation, connection_error: bool) -> EndpointChecks {
+    // reqwest reports both TCP refusal and invalid TLS certificates as
+    // connection failures. Do not pretend this identifies the precise cause.
+    EndpointChecks {
+        dns,
+        tls: if connection_error {
+            unavailable(Status::Failed, "cdn_tls_or_connect_failed")
+        } else {
+            unavailable(Status::Unknown, "cdn_tls_unverified")
+        },
+        http: unavailable(Status::Unknown, "cdn_http_unobserved"),
+        overall: unavailable(Status::Failed, "cdn_endpoint_unreachable"),
     }
 }
 
@@ -142,7 +154,7 @@ pub fn inspect(profile: &Value, case: &CdnScenario) -> Observation {
     if tls.get("allowInsecure").and_then(Value::as_bool) == Some(true) {
         return unavailable(Status::Unsupported, "cdn_insecure_tls");
     }
-    let Some(url) = reqwest::Url::parse(&case.endpoint_url).ok() else {
+    let Ok(url) = reqwest::Url::parse(&case.endpoint_url) else {
         return unavailable(Status::Unsupported, "cdn_invalid_endpoint");
     };
     let Some(host) = url.host_str() else {
@@ -330,6 +342,11 @@ mod tests {
         assert_eq!(http_status(404, 404).status, Status::Ok);
         assert_eq!(http_status(495, 404).status, Status::Failed);
         assert_eq!(route().status, Status::Unknown);
+        let transport_failure = request_failed(ok, true);
+        assert_eq!(transport_failure.tls.status, Status::Failed);
+        assert_eq!(transport_failure.http.status, Status::Unknown);
+        assert_eq!(transport_failure.overall.status, Status::Failed);
+        assert_eq!(request_failed(ok, false).tls.status, Status::Unknown);
         assert_eq!(overall(ok, ok, ok, unknown).status, Status::Unknown);
         assert_eq!(overall(ok, fail, ok, unknown).status, Status::Degraded);
         assert_eq!(overall(ok, ok, fail, unknown).status, Status::Degraded);
