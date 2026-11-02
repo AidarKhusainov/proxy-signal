@@ -1,6 +1,6 @@
 use crate::{
-    balancer, cascade,
-    config::{BalancerScenario, CascadeScenario, Endpoint, Scenario},
+    balancer, cascade, cdn,
+    config::{BalancerScenario, CascadeScenario, CdnScenario, Endpoint, Scenario},
     incident::{Observation, Status},
     probe::{self, TargetResult},
     scenario,
@@ -97,6 +97,7 @@ pub struct CheckResults {
     pub scenarios: Vec<Observation>,
     pub balancers: Vec<BalancerChecks>,
     pub cascades: Vec<CascadeChecks>,
+    pub cdn: Vec<CdnChecks>,
 }
 
 pub struct BalancerChecks {
@@ -115,6 +116,12 @@ pub struct CascadeChecks {
     pub overall: Observation,
 }
 
+pub struct CdnChecks {
+    pub config: Observation,
+    pub tunnel: Observation,
+    pub route: Observation,
+}
+
 struct BalancerAttempt {
     route_http: Option<bool>,
     candidate_http: Vec<Option<bool>>,
@@ -127,6 +134,7 @@ pub async fn check(
     scenarios: &[Scenario],
     balancers: &[BalancerScenario],
     cascades: &[CascadeScenario],
+    cdn_cases: &[CdnScenario],
     budget: Duration,
 ) -> Result<CheckResults> {
     let socket = TcpListener::bind("127.0.0.1:0").context("loopback_bind")?;
@@ -141,6 +149,10 @@ pub async fn check(
     let inspected_cascades: Vec<_> = cascades
         .iter()
         .map(|case| cascade::inspect(&original, case))
+        .collect();
+    let inspected_cdn: Vec<_> = cdn_cases
+        .iter()
+        .map(|case| cdn::inspect(&original, case))
         .collect();
     // Each unique candidate is tested through a temporary inbound with a
     // dedicated routing rule. Original probe-in traffic never matches these
@@ -173,7 +185,7 @@ pub async fn check(
     let dir = TempDir::new().context("temporary_directory")?;
     let access_path = dir.path().join("access.log");
     let error_path = dir.path().join("error.log");
-    if !scenarios.is_empty() || !balancers.is_empty() || !cascades.is_empty() {
+    if !scenarios.is_empty() || !balancers.is_empty() || !cascades.is_empty() || !cdn_cases.is_empty() {
         // The engine writes diagnostic records to private temporary files.
         // Never emit raw logs (they can contain domains and profile data).
         config["log"] = json!({
@@ -281,6 +293,29 @@ pub async fn check(
                 )
             });
         }
+        // CDN tunnel requests run through the original outbound routing, not a
+        // synthetic replacement of its XHTTP transport.
+        let mut cdn_tasks = JoinSet::new();
+        let mut cdn_http = vec![None; cdn_cases.len()];
+        for (index, (case, config)) in cdn_cases.iter().zip(&inspected_cdn).enumerate() {
+            if config.status != Status::Ok {
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                continue;
+            }
+            let url = case.url.clone();
+            let route_proxy = proxy.clone();
+            cdn_tasks.spawn(async move {
+                (
+                    index,
+                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, remaining))
+                        .await
+                        .ok(),
+                )
+            });
+        }
         // Egress keeps its original status semantics; it does not block
         // execution of already-started balancer probes.
         let mut egress = Vec::with_capacity(endpoints.len());
@@ -335,18 +370,23 @@ pub async fn check(
                 cascade_http[index] = result;
             }
         }
-        Ok((egress, attempts, balancing, cascade_http))
+        while let Some(joined) = cdn_tasks.join_next().await {
+            if let Ok((index, result)) = joined {
+                cdn_http[index] = result;
+            }
+        }
+        Ok((egress, attempts, balancing, cascade_http, cdn_http))
     }
     .await;
     child.stop().await;
     // Read only after process termination; cap both logs and fail closed on
     // oversized, invalid or inaccessible diagnostic data.
-    let logs = if scenarios.is_empty() && balancers.is_empty() && cascades.is_empty() {
+    let logs = if scenarios.is_empty() && balancers.is_empty() && cascades.is_empty() && cdn_cases.is_empty() {
         None
     } else {
         Some((read_log(&access_path), read_log(&error_path)))
     };
-    result.map(|(egress, attempts, balancing, cascade_http)| {
+    result.map(|(egress, attempts, balancing, cascade_http, cdn_http)| {
         let scenarios = attempts
             .into_iter()
             .zip(scenarios)
@@ -469,11 +509,36 @@ pub async fn check(
                 }
             })
             .collect();
+        let cdn = cdn_cases
+            .iter()
+            .zip(inspected_cdn)
+            .zip(cdn_http)
+            .map(|((case, config), http_ok)| {
+                if config.status != Status::Ok {
+                    return CdnChecks {
+                        config,
+                        tunnel: Observation::new(Status::Unsupported, "cdn_config_invalid"),
+                        route: cdn::route(),
+                    };
+                }
+                CdnChecks {
+                    config,
+                    tunnel: cdn::tunnel(
+                        &original,
+                        case,
+                        http_ok,
+                        logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                    ),
+                    route: cdn::route(),
+                }
+            })
+            .collect();
         CheckResults {
             egress,
             scenarios,
             balancers,
             cascades,
+            cdn,
         }
     })
 }
