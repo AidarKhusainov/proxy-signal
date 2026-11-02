@@ -175,7 +175,10 @@ pub fn inspect(profile: &Value, case: &CdnScenario) -> Observation {
         return unavailable(Status::Unsupported, "cdn_xhttp_path_invalid");
     }
     if let Some(value) = xhttp.get("host") {
-        if value.as_str().is_none_or(|value| !value.is_empty() && value != host) {
+        if value
+            .as_str()
+            .is_none_or(|value| !value.is_empty() && value != host)
+        {
             return unavailable(Status::Unsupported, "cdn_xhttp_host_mismatch");
         }
     }
@@ -204,11 +207,18 @@ fn attributable(profile: &Value, case: &CdnScenario) -> bool {
     rule.get("type").and_then(Value::as_str) == Some("field")
         && rule.get("outboundTag").and_then(Value::as_str) == Some(case.outbound_tag.as_str())
         && rule.as_object().is_some_and(|obj| {
-            obj.keys().all(|key| matches!(key.as_str(), "type" | "domain" | "outboundTag" | "ruleTag"))
+            obj.keys()
+                .all(|key| matches!(key.as_str(), "type" | "domain" | "outboundTag" | "ruleTag"))
         })
-        && rule.get("domain").and_then(Value::as_array).is_some_and(|domains| {
-            domains.len() == 1 && domains[0].as_str().is_some_and(|domain| domain == format!("full:{host}"))
-        })
+        && rule
+            .get("domain")
+            .and_then(Value::as_array)
+            .is_some_and(|domains| {
+                domains.len() == 1
+                    && domains[0]
+                        .as_str()
+                        .is_some_and(|domain| domain == format!("full:{host}"))
+            })
 }
 
 /// Real HTTPS over the unchanged full-profile diagnostic inbound. Xray access
@@ -254,13 +264,21 @@ pub fn overall(
     }
     if endpoint.status == Status::Failed {
         return unavailable(
-            if tunnel.status == Status::Ok { Status::Degraded } else { Status::Failed },
+            if tunnel.status == Status::Ok {
+                Status::Degraded
+            } else {
+                Status::Failed
+            },
             "cdn_endpoint_failed",
         );
     }
     if tunnel.status == Status::Failed {
         return unavailable(
-            if endpoint.status == Status::Ok { Status::Degraded } else { Status::Failed },
+            if endpoint.status == Status::Ok {
+                Status::Degraded
+            } else {
+                Status::Failed
+            },
             "cdn_tunnel_failed",
         );
     }
@@ -270,7 +288,10 @@ pub fn overall(
         } else if route.status == Status::Failed {
             unavailable(Status::Failed, "cdn_route_failed")
         } else {
-            unavailable(Status::Unknown, "cdn_endpoint_tunnel_healthy_route_unverified")
+            unavailable(
+                Status::Unknown,
+                "cdn_endpoint_tunnel_healthy_route_unverified",
+            )
         };
     }
     unavailable(Status::Unknown, "cdn_incomplete_evidence")
@@ -308,9 +329,11 @@ mod tests {
         value["outbounds"][0]["streamSettings"]["tlsSettings"]["allowInsecure"] = json!(true);
         assert_eq!(inspect(&value, &case()).status, Status::Unsupported);
         value["outbounds"][0]["streamSettings"]["tlsSettings"]["allowInsecure"] = json!(false);
-        value["outbounds"][0]["streamSettings"]["tlsSettings"]["serverName"] = json!("wrong.example.org");
+        value["outbounds"][0]["streamSettings"]["tlsSettings"]["serverName"] =
+            json!("wrong.example.org");
         assert_eq!(inspect(&value, &case()).code, "cdn_sni_mismatch_or_missing");
-        value["outbounds"][0]["streamSettings"]["tlsSettings"]["serverName"] = json!("cdn.example.org");
+        value["outbounds"][0]["streamSettings"]["tlsSettings"]["serverName"] =
+            json!("cdn.example.org");
         value["outbounds"][0]["streamSettings"]["xhttpSettings"]["path"] = json!("invalid");
         assert_eq!(inspect(&value, &case()).code, "cdn_xhttp_path_invalid");
         value["outbounds"][0]["streamSettings"]["xhttpSettings"]["path"] = json!("/xhttp");
@@ -325,13 +348,34 @@ mod tests {
     fn tunnel_requires_real_https_and_exact_access_evidence() {
         let value = profile();
         let access = "2026/01/01 from 127.0.0.1:1 accepted //example.com:443 [proxy-signal-probe-in ==> vpn]";
-        assert_eq!(tunnel(&value, &case(), Some(true), Some(access)).status, Status::Ok);
-        assert_eq!(tunnel(&value, &case(), Some(false), Some(access)).status, Status::Failed);
-        assert_eq!(tunnel(&value, &case(), Some(true), None).status, Status::Unknown);
-        assert_eq!(tunnel(&value, &case(), Some(true), Some(&access.replace("==> vpn", "==> direct"))).status, Status::Failed);
+        assert_eq!(
+            tunnel(&value, &case(), Some(true), Some(access)).status,
+            Status::Ok
+        );
+        assert_eq!(
+            tunnel(&value, &case(), Some(false), Some(access)).status,
+            Status::Failed
+        );
+        assert_eq!(
+            tunnel(&value, &case(), Some(true), None).status,
+            Status::Unknown
+        );
+        assert_eq!(
+            tunnel(
+                &value,
+                &case(),
+                Some(true),
+                Some(&access.replace("==> vpn", "==> direct"))
+            )
+            .status,
+            Status::Failed
+        );
         let mut ambiguous = value;
         ambiguous["routing"]["rules"][0]["domain"] = json!(["domain:example.com"]);
-        assert_eq!(tunnel(&ambiguous, &case(), Some(true), Some(access)).status, Status::Unknown);
+        assert_eq!(
+            tunnel(&ambiguous, &case(), Some(true), Some(access)).status,
+            Status::Unknown
+        );
     }
 
     #[test]

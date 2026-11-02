@@ -565,8 +565,14 @@ mod tests {
         let yaml = "kind: file\nid: node\npath: /tmp/profile.json\ncdn:\n  - id: edge\n    endpoint_url: https://cdn.example.org/status\n    expected_http_status: 404\n    url: https://example.com/\n    outbound_tag: vpn\n";
         let source: Source = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(source.cdn().len(), 1);
-        assert!(serde_yaml::from_str::<Source>(&yaml.replace("expected_http_status: 404", "expected_http_status: 700")).is_ok());
-        assert!(serde_yaml::from_str::<Source>(&yaml.replace("outbound_tag: vpn", "unknown_field: vpn")).is_err());
+        assert!(serde_yaml::from_str::<Source>(
+            &yaml.replace("expected_http_status: 404", "expected_http_status: 700")
+        )
+        .is_ok());
+        assert!(serde_yaml::from_str::<Source>(
+            &yaml.replace("outbound_tag: vpn", "unknown_field: vpn")
+        )
+        .is_err());
     }
 
     #[test]

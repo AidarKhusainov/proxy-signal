@@ -479,7 +479,9 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
     }
     for case in entry.cdn() {
         let key = format!("cdn/{}/{}", entry.id(), case.id);
-        for component in ["dns", "tls", "http", "endpoint", "config", "tunnel", "route"] {
+        for component in [
+            "dns", "tls", "http", "endpoint", "config", "tunnel", "route",
+        ] {
             results.push((
                 format!("{key}/{component}"),
                 Observation::new(Status::Unknown, code),

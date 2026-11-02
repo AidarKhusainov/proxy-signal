@@ -278,7 +278,10 @@ mod tests {
         let failed = Observation::new(Status::Failed, "failed");
         let unknown = hops();
         assert_eq!(overall(ok, failed, unknown).code, "cascade_https_failed");
-        assert_eq!(overall(ok, ok, unknown).code, "cascade_https_healthy_hops_unverified");
+        assert_eq!(
+            overall(ok, ok, unknown).code,
+            "cascade_https_healthy_hops_unverified"
+        );
         assert_eq!(overall(ok, ok, failed).code, "cascade_hops_failed");
         assert_ne!(overall(ok, ok, unknown).status, Status::Ok);
     }

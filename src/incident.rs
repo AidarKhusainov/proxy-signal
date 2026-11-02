@@ -158,7 +158,11 @@ impl State {
                     && o.code == "cdn_endpoint_tunnel_healthy_route_unverified"
                     && matches!(
                         active_code,
-                        Some("cdn_endpoint_failed" | "cdn_tunnel_failed" | "cdn_endpoint_and_tunnel_failed")
+                        Some(
+                            "cdn_endpoint_failed"
+                                | "cdn_tunnel_failed"
+                                | "cdn_endpoint_and_tunnel_failed"
+                        )
                     );
                 if balancer_recovered || cascade_recovered || cdn_recovered {
                     record.active = None;
@@ -317,21 +321,41 @@ mod tests {
             for _ in 0..2 {
                 state.observe(key, Observation::new(Status::Failed, failure_code), true);
             }
-            state.observe(key, Observation::new(Status::Unknown, "cascade_incomplete_evidence"), true);
+            state.observe(
+                key,
+                Observation::new(Status::Unknown, "cascade_incomplete_evidence"),
+                true,
+            );
             assert_eq!(state.pending.len(), 1);
-            state.observe(key, Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"), true);
+            state.observe(
+                key,
+                Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"),
+                true,
+            );
             assert_eq!(state.pending.len(), 2);
             assert_eq!(state.pending[1].status, Status::Unknown);
             assert_eq!(state.records[key].active, None);
-            state.observe(key, Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"), true);
+            state.observe(
+                key,
+                Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"),
+                true,
+            );
             assert_eq!(state.pending.len(), 2);
         }
         let mut hop_failure = State::default();
         let key = "cascade/source/chain";
         for _ in 0..2 {
-            hop_failure.observe(key, Observation::new(Status::Failed, "cascade_hops_failed"), true);
+            hop_failure.observe(
+                key,
+                Observation::new(Status::Failed, "cascade_hops_failed"),
+                true,
+            );
         }
-        hop_failure.observe(key, Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"), true);
+        hop_failure.observe(
+            key,
+            Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"),
+            true,
+        );
         assert_eq!(hop_failure.pending.len(), 1);
         assert_eq!(hop_failure.records[key].active, Some(Status::Failed));
     }
@@ -341,17 +365,43 @@ mod tests {
         let key = "cdn/source/edge";
         let mut state = State::default();
         for _ in 0..2 {
-            state.observe(key, Observation::new(Status::Degraded, "cdn_endpoint_failed"), true);
+            state.observe(
+                key,
+                Observation::new(Status::Degraded, "cdn_endpoint_failed"),
+                true,
+            );
         }
-        state.observe(key, Observation::new(Status::Unknown, "cdn_incomplete_evidence"), true);
+        state.observe(
+            key,
+            Observation::new(Status::Unknown, "cdn_incomplete_evidence"),
+            true,
+        );
         assert_eq!(state.pending.len(), 1);
-        state.observe(key, Observation::new(Status::Unknown, "cdn_endpoint_tunnel_healthy_route_unverified"), true);
+        state.observe(
+            key,
+            Observation::new(
+                Status::Unknown,
+                "cdn_endpoint_tunnel_healthy_route_unverified",
+            ),
+            true,
+        );
         assert_eq!(state.pending[1].status, Status::Unknown);
         let mut route = State::default();
         for _ in 0..2 {
-            route.observe(key, Observation::new(Status::Failed, "cdn_route_failed"), true);
+            route.observe(
+                key,
+                Observation::new(Status::Failed, "cdn_route_failed"),
+                true,
+            );
         }
-        route.observe(key, Observation::new(Status::Unknown, "cdn_endpoint_tunnel_healthy_route_unverified"), true);
+        route.observe(
+            key,
+            Observation::new(
+                Status::Unknown,
+                "cdn_endpoint_tunnel_healthy_route_unverified",
+            ),
+            true,
+        );
         assert_eq!(route.pending.len(), 1);
     }
 

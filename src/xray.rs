@@ -185,7 +185,11 @@ pub async fn check(
     let dir = TempDir::new().context("temporary_directory")?;
     let access_path = dir.path().join("access.log");
     let error_path = dir.path().join("error.log");
-    if !scenarios.is_empty() || !balancers.is_empty() || !cascades.is_empty() || !cdn_cases.is_empty() {
+    if !scenarios.is_empty()
+        || !balancers.is_empty()
+        || !cascades.is_empty()
+        || !cdn_cases.is_empty()
+    {
         // The engine writes diagnostic records to private temporary files.
         // Never emit raw logs (they can contain domains and profile data).
         config["log"] = json!({
@@ -381,7 +385,11 @@ pub async fn check(
     child.stop().await;
     // Read only after process termination; cap both logs and fail closed on
     // oversized, invalid or inaccessible diagnostic data.
-    let logs = if scenarios.is_empty() && balancers.is_empty() && cascades.is_empty() && cdn_cases.is_empty() {
+    let logs = if scenarios.is_empty()
+        && balancers.is_empty()
+        && cascades.is_empty()
+        && cdn_cases.is_empty()
+    {
         None
     } else {
         Some((read_log(&access_path), read_log(&error_path)))
