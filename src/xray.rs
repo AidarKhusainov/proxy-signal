@@ -91,9 +91,9 @@ pub(crate) fn has_enabled_sniffing(config: &Value) -> bool {
         .get("inbounds")
         .and_then(Value::as_array)
         .is_some_and(|inbounds| {
-            inbounds.iter().any(|inbound| {
-                inbound.pointer("/sniffing/enabled") == Some(&Value::Bool(true))
-            })
+            inbounds
+                .iter()
+                .any(|inbound| inbound.pointer("/sniffing/enabled") == Some(&Value::Bool(true)))
         })
 }
 
@@ -120,8 +120,12 @@ fn diagnostic_sniffing(inbounds: Option<&Value>) -> Result<Option<Value>> {
                     if settings.keys().any(|key| {
                         !matches!(
                             key.as_str(),
-                            "enabled" | "destOverride" | "routeOnly" | "metadataOnly"
-                                | "domainsExcluded" | "ipsExcluded"
+                            "enabled"
+                                | "destOverride"
+                                | "routeOnly"
+                                | "metadataOnly"
+                                | "domainsExcluded"
+                                | "ipsExcluded"
                         )
                     }) {
                         bail!("unsupported_sniffing_field");
@@ -133,7 +137,9 @@ fn diagnostic_sniffing(inbounds: Option<&Value>) -> Result<Option<Value>> {
                     }
                     for key in ["destOverride", "domainsExcluded", "ipsExcluded"] {
                         if settings.get(key).is_some_and(|value| {
-                            value.as_array().is_none_or(|items| !items.iter().all(Value::is_string))
+                            value
+                                .as_array()
+                                .is_none_or(|items| !items.iter().all(Value::is_string))
                         }) {
                             bail!("invalid_sniffing");
                         }
@@ -978,15 +984,25 @@ mod tests {
 
     #[test]
     fn unsupported_or_malformed_sniffing_fails_closed() {
-        let make = |sniffing: Value| json!({
-            "outbounds": [{"protocol": "vless"}],
-            "inbounds": [{"protocol": "socks", "sniffing": sniffing}]
-        });
+        let make = |sniffing: Value| {
+            json!({
+                "outbounds": [{"protocol": "vless"}],
+                "inbounds": [{"protocol": "socks", "sniffing": sniffing}]
+            })
+        };
         assert!(prepare(make(json!({"enabled": "yes"})), 19123).is_err());
         assert!(prepare(make(json!({"enabled": true, "destOverride": "tls"})), 19123).is_err());
-        assert!(prepare(make(json!({"enabled": true, "metadataOnly": "false"})), 19123).is_err());
+        assert!(prepare(
+            make(json!({"enabled": true, "metadataOnly": "false"})),
+            19123
+        )
+        .is_err());
         assert!(prepare(make(json!({"enabled": true, "unknownFlag": true})), 19123).is_err());
-        assert!(prepare(make(json!({"enabled": true, "metadataOnly": true, "routeOnly": true})), 19123).is_ok());
+        assert!(prepare(
+            make(json!({"enabled": true, "metadataOnly": true, "routeOnly": true})),
+            19123
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1008,7 +1024,10 @@ mod tests {
             outbound_tag: "vpn".into(),
             dns: None,
         };
-        assert_eq!(scenario::evaluate(&case, true, "", "").status, Status::Unknown);
+        assert_eq!(
+            scenario::evaluate(&case, true, "", "").status,
+            Status::Unknown
+        );
     }
 
     #[test]
