@@ -206,6 +206,7 @@ pub fn candidate_status(results: &[Observation]) -> Observation {
 
 /// Xray access logs identify an outbound, not the measured RTTs or policy
 /// decision of leastPing / leastLoad. Therefore their route stays UNKNOWN.
+#[cfg(test)]
 pub fn route(
     case: &BalancerScenario,
     attributable: bool,
