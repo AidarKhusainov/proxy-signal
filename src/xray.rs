@@ -1,5 +1,6 @@
 use crate::{
-    config::{Endpoint, Scenario},
+    balancer,
+    config::{BalancerScenario, Endpoint, Scenario},
     incident::{Observation, Status},
     probe::{self, TargetResult},
     scenario,
@@ -7,6 +8,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     io::Read,
     net::{IpAddr, SocketAddr, TcpListener},
     path::Path,
@@ -91,6 +93,19 @@ pub fn prepare(mut config: Value, port: u16) -> Result<Value> {
 pub struct CheckResults {
     pub egress: Vec<TargetResult>,
     pub scenarios: Vec<Observation>,
+    pub balancers: Vec<BalancerChecks>,
+}
+
+pub struct BalancerChecks {
+    pub config: Observation,
+    pub candidates: Observation,
+    pub route: Observation,
+    pub overall: Observation,
+}
+
+struct BalancerAttempt {
+    route_http: Option<bool>,
+    candidate_http: Vec<Option<bool>>,
 }
 
 pub async fn check(
@@ -98,6 +113,7 @@ pub async fn check(
     endpoints: &[(Endpoint, Option<IpAddr>)],
     allowed: &[IpAddr],
     scenarios: &[Scenario],
+    balancers: &[BalancerScenario],
     budget: Duration,
 ) -> Result<CheckResults> {
     let socket = TcpListener::bind("127.0.0.1:0").context("loopback_bind")?;
@@ -105,11 +121,39 @@ pub async fn check(
     drop(socket);
     let original = config.clone();
     let mut config = prepare(config, port)?;
+    let inspected: Vec<_> = balancers.iter().map(|case| balancer::inspect(&original, case)).collect();
+    // Each unique candidate is tested through a temporary inbound with a
+    // dedicated routing rule. Original probe-in traffic never matches these
+    // rules, so the balancer's normal route remains intact.
+    let mut diagnostics: Vec<(String, String, u16)> = Vec::new();
+    let mut used_ports = HashSet::from([port]);
+    for (case, status) in balancers.iter().zip(&inspected) {
+        if status.status != Status::Ok {
+            continue;
+        }
+        for tag in &case.candidates {
+            if diagnostics.iter().any(|(existing, _, _)| existing == tag) {
+                continue;
+            }
+            let candidate_port = loop {
+                let socket = TcpListener::bind("127.0.0.1:0").context("candidate_loopback_bind")?;
+                let candidate_port = socket.local_addr()?.port();
+                if used_ports.insert(candidate_port) {
+                    break candidate_port;
+                }
+            };
+            let inbound = format!("proxy-signal-candidate-{}", diagnostics.len());
+            diagnostics.push((tag.clone(), inbound, candidate_port));
+        }
+    }
+    if !diagnostics.is_empty() {
+        install_candidate_diagnostics(&mut config, &diagnostics)?;
+    }
 
     let dir = TempDir::new().context("temporary_directory")?;
     let access_path = dir.path().join("access.log");
     let error_path = dir.path().join("error.log");
-    if !scenarios.is_empty() {
+    if !scenarios.is_empty() || !balancers.is_empty() {
         // The engine writes diagnostic records to private temporary files.
         // Never emit raw logs (they can contain domains and profile data).
         config["log"] = json!({
@@ -182,18 +226,60 @@ pub async fn check(
             attempts.push(Ok(response.unwrap_or(false)));
         }
 
-        Ok((egress, attempts))
+        // Run optional balancer probes after existing egress and domain checks.
+        // A timed-out request is UNKNOWN, not evidence of a dead candidate.
+        let mut balancing = Vec::with_capacity(balancers.len());
+        for (case, static_result) in balancers.iter().zip(&inspected) {
+            if static_result.status != Status::Ok {
+                balancing.push(BalancerAttempt {
+                    route_http: None,
+                    candidate_http: Vec::new(),
+                });
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let route_http = if remaining.is_zero() {
+                None
+            } else {
+                timeout_at(deadline, probe::probe_https(&case.url, &proxy, remaining))
+                    .await
+                    .ok()
+            };
+            let mut candidate_http = Vec::with_capacity(case.candidates.len());
+            for tag in &case.candidates {
+                let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag) else {
+                    candidate_http.push(None);
+                    continue;
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    candidate_http.push(None);
+                    continue;
+                }
+                let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
+                candidate_http.push(
+                    timeout_at(deadline, probe::probe_https(&case.url, &candidate_proxy, remaining))
+                        .await
+                        .ok(),
+                );
+            }
+            balancing.push(BalancerAttempt {
+                route_http,
+                candidate_http,
+            });
+        }
+        Ok((egress, attempts, balancing))
     }
     .await;
     child.stop().await;
     // Read only after process termination; cap both logs and fail closed on
     // oversized, invalid or inaccessible diagnostic data.
-    let logs = if scenarios.is_empty() {
+    let logs = if scenarios.is_empty() && balancers.is_empty() {
         None
     } else {
         Some((read_log(&access_path), read_log(&error_path)))
     };
-    result.map(|(egress, attempts)| {
+    result.map(|(egress, attempts, balancing)| {
         let scenarios = attempts
             .into_iter()
             .zip(scenarios)
@@ -207,8 +293,73 @@ pub async fn check(
                 },
             })
             .collect();
-        CheckResults { egress, scenarios }
+        let balancers = balancers.iter().zip(inspected).zip(balancing)
+            .map(|((case, config), attempt)| {
+                if config.status != Status::Ok {
+                    return BalancerChecks {
+                        config,
+                        candidates: Observation::new(Status::Unsupported, "balancer_config_invalid"),
+                        route: Observation::new(Status::Unsupported, "balancer_config_invalid"),
+                        overall: config,
+                    };
+                }
+                let candidates = case.candidates.iter().zip(attempt.candidate_http.iter())
+                    .map(|(tag, http_ok)| {
+                        let inbound = diagnostics.iter().find(|(existing, _, _)| existing == tag);
+                        match inbound {
+                            Some((_, name, _)) => balancer::candidate(
+                                *http_ok,
+                                logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                                &case.url, name, tag,
+                            ),
+                            None => Observation::new(Status::Unknown, "candidate_not_instrumented"),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let candidates = balancer::candidate_status(&candidates);
+                let route = balancer::route(
+                    case, balancer::attributable(&original, case), attempt.route_http,
+                    logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                );
+                let overall = balancer::overall(config, candidates, route);
+                BalancerChecks { config, candidates, route, overall }
+            })
+            .collect();
+        CheckResults { egress, scenarios, balancers }
     })
+}
+
+/// Test-only inbounds force each candidate without changing routing decisions
+/// for the ordinary diagnostic inbound. Never applied to a stored/source profile.
+fn install_candidate_diagnostics(
+    config: &mut Value,
+    candidates: &[(String, String, u16)],
+) -> Result<()> {
+    let inbounds = config["inbounds"].as_array_mut().context("diagnostic_inbounds")?;
+    for (_, inbound, port) in candidates {
+        inbounds.push(json!({
+            "tag": inbound,
+            "listen": "127.0.0.1",
+            "port": port,
+            "protocol": "http",
+            "settings": { "timeout": 10 }
+        }));
+    }
+    let routing = config.get_mut("routing")
+        .and_then(Value::as_object_mut)
+        .context("diagnostic_routing")?;
+    let rules = routing.entry("rules").or_insert_with(|| json!([]))
+        .as_array_mut().context("diagnostic_rules")?;
+    // Only the candidate inbounds match these rules; the main inbound
+    // follows the original ordered routing rules.
+    for (tag, inbound, _) in candidates.iter().rev() {
+        rules.insert(0, json!({
+            "type": "field",
+            "inboundTag": [inbound],
+            "outboundTag": tag
+        }));
+    }
+    Ok(())
 }
 
 /// Never load unbounded untrusted Xray output into the monitor.
