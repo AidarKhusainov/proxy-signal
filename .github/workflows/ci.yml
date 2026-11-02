@@ -29,13 +29,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets
-      # Temporary PR #7 acceptance step; remove after recording the result.
-      - name: One-off controlled failover Docker smoke
-        if: github.event_name == 'pull_request' && github.event.pull_request.number == 7
-        timeout-minutes: 8
-        run: |
-          docker build -t proxy-signal:failover .
-          IMAGE=proxy-signal:failover sh scripts/smoke-failover-docker.sh
       # Release/acceptance check only; avoid a Docker rebuild on every PR push.
       - name: Docker Compose and Xray smoke
         if: github.event_name == 'workflow_dispatch'
