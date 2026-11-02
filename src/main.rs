@@ -1,4 +1,5 @@
 mod balancer;
+mod cascade;
 mod config;
 mod incident;
 mod probe;
@@ -222,20 +223,49 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         })
                         .collect::<Vec<_>>()
                 };
-                let (observation, checks, balance_checks) = if xray::prepare(document.clone(), 9876)
+                let unavailable_cascades = |status: Status, code: &'static str| {
+                    entry
+                        .cascades()
+                        .iter()
+                        .flat_map(|case| {
+                            let key = format!("cascade/{}/{}", entry.id(), case.id);
+                            let config = if status == Status::Unsupported {
+                                Observation::new(status, code)
+                            } else {
+                                cascade::inspect(&document, case)
+                            };
+                            let unavailable = Observation::new(status, code);
+                            let overall = if config.status == Status::Ok {
+                                unavailable
+                            } else {
+                                config
+                            };
+                            vec![
+                                (format!("{key}/config"), config),
+                                (format!("{key}/https"), unavailable),
+                                (format!("{key}/hops"), unavailable),
+                                (key, overall),
+                            ]
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let (observation, checks, balance_checks, cascade_checks) = if xray::prepare(document.clone(), 9876)
                     .is_err()
                 {
                     (
                         Observation::new(Status::Unsupported, "profile_incompatible"),
                         scenario_rows(Status::Unsupported, "profile_incompatible"),
                         unavailable_balancers(Status::Unsupported, "profile_incompatible"),
+                        unavailable_cascades(Status::Unsupported, "profile_incompatible"),
                     )
                 } else if targets.iter().all(|(_, ip)| ip.is_none())
                     && entry.scenarios().is_empty()
                     && entry.balancers().is_empty()
+                    && entry.cascades().is_empty()
                 {
                     (
                         Observation::new(Status::Unknown, "no_direct_baseline"),
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                     )
@@ -246,6 +276,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                         entry.expected_exit_ips(),
                         entry.scenarios(),
                         entry.balancers(),
+                        entry.cascades(),
                         timeout,
                     )
                     .await
@@ -295,17 +326,32 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                     rows
                                 })
                                 .collect();
+                            let cascade_checks = entry
+                                .cascades()
+                                .iter()
+                                .zip(steps.cascades)
+                                .flat_map(|(case, evidence)| {
+                                    let key = format!("cascade/{}/{}", entry.id(), case.id);
+                                    vec![
+                                        (format!("{key}/config"), evidence.config),
+                                        (format!("{key}/https"), evidence.https),
+                                        (format!("{key}/hops"), evidence.hops),
+                                        (key, evidence.overall),
+                                    ]
+                                })
+                                .collect();
                             let observation = if targets.iter().all(|(_, ip)| ip.is_none()) {
                                 Observation::new(Status::Unknown, "no_direct_baseline")
                             } else {
                                 classify(&steps.egress)
                             };
-                            (observation, checks, balance_checks)
+                            (observation, checks, balance_checks, cascade_checks)
                         }
                         Err(_) => (
                             Observation::new(Status::Unknown, "xray_runtime_error"),
                             scenario_rows(Status::Unknown, "xray_runtime_error"),
                             unavailable_balancers(Status::Unknown, "xray_runtime_error"),
+                            unavailable_cascades(Status::Unknown, "xray_runtime_error"),
                         ),
                     }
                 };
@@ -315,17 +361,19 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     start.elapsed(),
                     checks,
                     balance_checks,
+                    cascade_checks,
                 )
             });
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios, balancers)) = result {
+            if let Ok((key, observation, elapsed, scenarios, balancers, cascades)) = result {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
                 results.push((key, observation));
                 results.extend(scenarios);
                 results.extend(balancers);
+                results.extend(cascades);
             } else {
                 eprintln!("ProxySignal: probe_task_error");
             }
@@ -351,6 +399,16 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
             format!("scenario/{}/{}", entry.id(), case.id),
             Observation::new(Status::Unknown, code),
         ));
+    }
+    for case in entry.cascades() {
+        let key = format!("cascade/{}/{}", entry.id(), case.id);
+        for component in ["config", "https", "hops"] {
+            results.push((
+                format!("{key}/{component}"),
+                Observation::new(Status::Unknown, code),
+            ));
+        }
+        results.push((key, Observation::new(Status::Unknown, code)));
     }
     for case in entry.balancers() {
         let key = format!("balancer/{}/{}", entry.id(), case.id);

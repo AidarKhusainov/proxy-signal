@@ -30,6 +30,12 @@ sources:
     #     strategy: leastPing
     #     candidates: [node-a, node-b]
     #     fallback_tag: direct
+    # Optional cascade; selected outbound first, then successive dialer proxies.
+    # Modern Xray uses streamSettings.sockopt.dialerProxy.
+    # cascades:
+    #   - id: multi-hop
+    #     url: https://example.net/
+    #     outbounds: [entry, relay, exit]  # exact outbound tags in dialer order
   # - id: authenticated-profile
   #   kind: https
   #   url: https://subscription.example.org/config.json

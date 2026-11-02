@@ -45,6 +45,16 @@ pub struct BalancerScenario {
     pub fallback_tag: Option<String>,
 }
 
+/// Order is the selected outbound first, followed by every proxy dialer until
+/// the final outbound. Each adjacent pair must be linked in the Xray JSON.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CascadeScenario {
+    pub id: String,
+    pub url: String,
+    pub outbounds: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BalancerStrategy {
@@ -100,6 +110,8 @@ pub enum Source {
         scenarios: Vec<Scenario>,
         #[serde(default)]
         balancers: Vec<BalancerScenario>,
+        #[serde(default)]
+        cascades: Vec<CascadeScenario>,
     },
     Https {
         id: String,
@@ -112,6 +124,8 @@ pub enum Source {
         scenarios: Vec<Scenario>,
         #[serde(default)]
         balancers: Vec<BalancerScenario>,
+        #[serde(default)]
+        cascades: Vec<CascadeScenario>,
     },
 }
 
@@ -129,6 +143,11 @@ impl Source {
     pub fn balancers(&self) -> &[BalancerScenario] {
         match self {
             Self::File { balancers, .. } | Self::Https { balancers, .. } => balancers,
+        }
+    }
+    pub fn cascades(&self) -> &[CascadeScenario] {
+        match self {
+            Self::File { cascades, .. } | Self::Https { cascades, .. } => cascades,
         }
     }
     pub fn expected_exit_ips(&self) -> &[IpAddr] {
@@ -186,6 +205,7 @@ impl Config {
         ids.clear();
         let mut total_scenarios = 0;
         let mut total_balancers = 0;
+        let mut total_cascades = 0;
         for source in &self.sources {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
@@ -289,6 +309,41 @@ impl Config {
                         bail!("duplicate balancer candidate");
                     }
                     distinct_candidates.insert(tag.as_str());
+                }
+            }
+            total_cascades += source.cascades().len();
+            if source.cascades().len() > 4 || total_cascades > 8 {
+                bail!("too many cascade scenarios");
+            }
+            for case in source.cascades() {
+                if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
+                    bail!("invalid or duplicate cascade scenario id");
+                }
+                let url = validate_https(&case.url)?;
+                let destination = (
+                    url.host_str().unwrap_or("").to_owned(),
+                    url.port_or_known_default(),
+                );
+                if !destinations.insert(destination.clone()) {
+                    bail!("duplicate scenario destination");
+                }
+                if self.endpoints.iter().any(|e| {
+                    let Ok(endpoint_url) = validate_https(&e.url) else {
+                        return false;
+                    };
+                    (
+                        endpoint_url.host_str().unwrap_or("").to_owned(),
+                        endpoint_url.port_or_known_default(),
+                    ) == destination
+                }) {
+                    bail!("cascade destination overlaps egress endpoint");
+                }
+                if case.outbounds.len() < 2
+                    || case.outbounds.len() > 8
+                    || case.outbounds.iter().any(|tag| !valid_tag(tag))
+                    || case.outbounds.iter().collect::<HashSet<_>>().len() != case.outbounds.len()
+                {
+                    bail!("invalid cascade expectation");
                 }
             }
             if distinct_candidates.len() > 8 {
@@ -420,6 +475,7 @@ mod tests {
         let old: Source = serde_yaml::from_str(yaml).unwrap();
         assert!(old.scenarios().is_empty());
         assert!(old.balancers().is_empty());
+        assert!(old.cascades().is_empty());
         let example = "kind: file\nid: node\npath: /tmp/profile.json\nscenarios:\n  - id: dns-direct\n    url: https://example.org/\n    route: direct\n    outbound_tag: direct\n    dns:\n      server: UDP:1.1.1.1:53\n      expected_ips: [93.184.215.14]\n";
         let new: Source = serde_yaml::from_str(example).unwrap();
         assert_eq!(new.scenarios().len(), 1);
@@ -436,6 +492,16 @@ mod tests {
         assert_eq!(source.balancers().len(), 1);
         assert!(serde_yaml::from_str::<Source>(&sample.replace("leastPing", "fastest")).is_err());
         assert!(serde_yaml::from_str::<Source>(&sample.replace("node-b", "node-a")).is_ok());
+    }
+
+    #[test]
+    fn cascade_config_is_optional_and_rejects_unknown_fields() {
+        let yaml = "kind: file\nid: node\npath: /tmp/profile.json\ncascades:\n  - id: two-hops\n    url: https://example.com/\n    outbounds: [entry, relay]\n";
+        let source: Source = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(source.cascades().len(), 1);
+        assert!(
+            serde_yaml::from_str::<Source>(&yaml.replace("    outbounds:", "    hops:")).is_err()
+        );
     }
 
     #[test]

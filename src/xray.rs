@@ -1,6 +1,6 @@
 use crate::{
-    balancer,
-    config::{BalancerScenario, Endpoint, Scenario},
+    balancer, cascade,
+    config::{BalancerScenario, CascadeScenario, Endpoint, Scenario},
     incident::{Observation, Status},
     probe::{self, TargetResult},
     scenario,
@@ -96,6 +96,7 @@ pub struct CheckResults {
     pub egress: Vec<TargetResult>,
     pub scenarios: Vec<Observation>,
     pub balancers: Vec<BalancerChecks>,
+    pub cascades: Vec<CascadeChecks>,
 }
 
 pub struct BalancerChecks {
@@ -104,6 +105,13 @@ pub struct BalancerChecks {
     pub candidate_details: Vec<Observation>,
     pub route: Observation,
     pub selected_candidate_index: Option<usize>,
+    pub overall: Observation,
+}
+
+pub struct CascadeChecks {
+    pub config: Observation,
+    pub https: Observation,
+    pub hops: Observation,
     pub overall: Observation,
 }
 
@@ -118,6 +126,7 @@ pub async fn check(
     allowed: &[IpAddr],
     scenarios: &[Scenario],
     balancers: &[BalancerScenario],
+    cascades: &[CascadeScenario],
     budget: Duration,
 ) -> Result<CheckResults> {
     let socket = TcpListener::bind("127.0.0.1:0").context("loopback_bind")?;
@@ -128,6 +137,10 @@ pub async fn check(
     let inspected: Vec<_> = balancers
         .iter()
         .map(|case| balancer::inspect(&original, case))
+        .collect();
+    let inspected_cascades: Vec<_> = cascades
+        .iter()
+        .map(|case| cascade::inspect(&original, case))
         .collect();
     // Each unique candidate is tested through a temporary inbound with a
     // dedicated routing rule. Original probe-in traffic never matches these
@@ -160,7 +173,7 @@ pub async fn check(
     let dir = TempDir::new().context("temporary_directory")?;
     let access_path = dir.path().join("access.log");
     let error_path = dir.path().join("error.log");
-    if !scenarios.is_empty() || !balancers.is_empty() {
+    if !scenarios.is_empty() || !balancers.is_empty() || !cascades.is_empty() {
         // The engine writes diagnostic records to private temporary files.
         // Never emit raw logs (they can contain domains and profile data).
         config["log"] = json!({
@@ -245,6 +258,29 @@ pub async fn check(
                 );
             }
         }
+        // Start independent cascade HTTPS checks before sequential egress/scenario
+        // probes. Missing budget or a cancelled request must remain UNKNOWN.
+        let mut cascade_tasks = JoinSet::new();
+        let mut cascade_http = vec![None; cascades.len()];
+        for (index, (case, static_result)) in cascades.iter().zip(&inspected_cascades).enumerate() {
+            if static_result.status != Status::Ok {
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                continue;
+            }
+            let url = case.url.clone();
+            let route_proxy = proxy.clone();
+            cascade_tasks.spawn(async move {
+                (
+                    index,
+                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, remaining))
+                        .await
+                        .ok(),
+                )
+            });
+        }
         // Egress keeps its original status semantics; it does not block
         // execution of already-started balancer probes.
         let mut egress = Vec::with_capacity(endpoints.len());
@@ -294,18 +330,23 @@ pub async fn check(
                 balancing[case_index].route_http = result;
             }
         }
-        Ok((egress, attempts, balancing))
+        while let Some(joined) = cascade_tasks.join_next().await {
+            if let Ok((index, result)) = joined {
+                cascade_http[index] = result;
+            }
+        }
+        Ok((egress, attempts, balancing, cascade_http))
     }
     .await;
     child.stop().await;
     // Read only after process termination; cap both logs and fail closed on
     // oversized, invalid or inaccessible diagnostic data.
-    let logs = if scenarios.is_empty() && balancers.is_empty() {
+    let logs = if scenarios.is_empty() && balancers.is_empty() && cascades.is_empty() {
         None
     } else {
         Some((read_log(&access_path), read_log(&error_path)))
     };
-    result.map(|(egress, attempts, balancing)| {
+    result.map(|(egress, attempts, balancing, cascade_http)| {
         let scenarios = attempts
             .into_iter()
             .zip(scenarios)
@@ -397,10 +438,42 @@ pub async fn check(
                 }
             })
             .collect();
+        let cascades = cascades
+            .iter()
+            .zip(inspected_cascades)
+            .zip(cascade_http)
+            .map(|((case, config), http_ok)| {
+                if config.status != Status::Ok {
+                    let unavailable =
+                        Observation::new(Status::Unsupported, "cascade_config_invalid");
+                    return CascadeChecks {
+                        config,
+                        https: unavailable,
+                        hops: unavailable,
+                        overall: config,
+                    };
+                }
+                let https = cascade::https(
+                    &original,
+                    case,
+                    http_ok,
+                    logs.as_ref().and_then(|(access, _)| access.as_deref()),
+                );
+                let hops = cascade::hops();
+                let overall = cascade::overall(config, https, hops);
+                CascadeChecks {
+                    config,
+                    https,
+                    hops,
+                    overall,
+                }
+            })
+            .collect();
         CheckResults {
             egress,
             scenarios,
             balancers,
+            cascades,
         }
     })
 }
