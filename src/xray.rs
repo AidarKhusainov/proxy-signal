@@ -218,9 +218,13 @@ pub async fn check(
             }
             let url = case.url.clone();
             let route_proxy = proxy.clone();
-            spawn_balancer_probe(&mut balancer_tasks, case_index, None, deadline, async move {
-                probe::probe_https(&url, &route_proxy, remaining).await
-            });
+            spawn_balancer_probe(
+                &mut balancer_tasks,
+                case_index,
+                None,
+                deadline,
+                async move { probe::probe_https(&url, &route_proxy, remaining).await },
+            );
             for (candidate_index, tag) in case.candidates.iter().enumerate() {
                 let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag)
                 else {

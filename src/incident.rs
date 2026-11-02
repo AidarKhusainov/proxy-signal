@@ -101,7 +101,9 @@ impl State {
         // Old PR versions used raw outbound tags as candidate keys. Never
         // deliver their pending notifications or retain them in persisted state.
         state.records.retain(|key, _| !legacy_candidate_key(key));
-        state.pending.retain(|notice| !legacy_candidate_key(&notice.key));
+        state
+            .pending
+            .retain(|notice| !legacy_candidate_key(&notice.key));
         Ok(state)
     }
 
@@ -250,7 +252,11 @@ mod tests {
             state.observe(key, degraded, true);
         }
         assert_eq!(state.pending.len(), 1);
-        state.observe(key, Observation::new(Status::Unknown, "balancer_incomplete_evidence"), true);
+        state.observe(
+            key,
+            Observation::new(Status::Unknown, "balancer_incomplete_evidence"),
+            true,
+        );
         assert_eq!(state.pending.len(), 1); // uncertain candidates cannot close an outage
         state.observe(key, recovered, true);
         state.observe(key, recovered, true);
@@ -308,7 +314,9 @@ mod tests {
         let restored = State::load(&path).unwrap();
         assert!(restored.pending.is_empty());
         assert_eq!(restored.records.len(), 1);
-        assert!(restored.records.contains_key("balancer/source/pool/candidate/0"));
+        assert!(restored
+            .records
+            .contains_key("balancer/source/pool/candidate/0"));
     }
 
     #[test]

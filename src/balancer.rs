@@ -255,7 +255,10 @@ pub fn overall(config: Observation, candidates: Observation, route: Observation)
         Observation::new(Status::Ok, "balancer_verified")
     } else if candidates.status == Status::Ok && route.status == Status::Unknown {
         // Candidate availability is verified, but balancer selection is not.
-        Observation::new(Status::Unknown, "balancer_candidates_healthy_route_unverified")
+        Observation::new(
+            Status::Unknown,
+            "balancer_candidates_healthy_route_unverified",
+        )
     } else {
         Observation::new(Status::Unknown, "balancer_incomplete_evidence")
     }
