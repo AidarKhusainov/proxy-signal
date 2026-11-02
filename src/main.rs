@@ -500,8 +500,17 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn, failover, client_evidence)) =
-                result
+            if let Ok((
+                key,
+                observation,
+                elapsed,
+                scenarios,
+                balancers,
+                cascades,
+                cdn,
+                failover,
+                client_evidence,
+            )) = result
             {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
