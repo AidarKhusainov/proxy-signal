@@ -2,8 +2,8 @@ mod balancer;
 mod cascade;
 mod cdn;
 mod config;
-mod incident;
 mod failover;
+mod incident;
 mod probe;
 mod scenario;
 mod source;
@@ -452,7 +452,9 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
         }
         let mut completed = std::collections::HashSet::new();
         while let Some(result) = tasks.join_next().await {
-            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn, failover)) = result {
+            if let Ok((key, observation, elapsed, scenarios, balancers, cascades, cdn, failover)) =
+                result
+            {
                 println!("target={key} duration_ms={}", elapsed.as_millis());
                 completed.insert(key.clone());
                 results.push((key, observation));
