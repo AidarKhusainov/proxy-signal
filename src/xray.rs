@@ -1121,6 +1121,38 @@ mod tests {
         assert_eq!(prepared["inbounds"][0]["listen"], "127.0.0.1");
         assert_eq!(prepared["inbounds"][0]["port"], 19001);
         assert_eq!(prepared["inbounds"].as_array().unwrap().len(), 1);
+        let case = Scenario {
+            id: "client-route".into(),
+            url: "https://example.org/".into(),
+            route: crate::config::ExpectedRoute::Proxy,
+            outbound_tag: "vpn".into(),
+            dns: None,
+        };
+        let log = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [socks-client ==> vpn]";
+        assert_eq!(
+            scenario::evaluate_for_inbound(&case, true, log, "", "socks-client").status,
+            Status::Ok
+        );
+        assert_eq!(
+            scenario::evaluate_for_inbound(&case, true, log, "", "http-client").status,
+            Status::Unknown
+        );
+    }
+
+    #[test]
+    fn still_rejects_client_identity_dependent_routing() {
+        for key in ["source", "user", "attrs"] {
+            let mut rule = json!({"type": "field", "outboundTag": "vpn"});
+            rule[key] = json!(["example"]);
+            let profile = json!({
+                "inbounds": [{"tag": "client", "sniffing": {
+                    "enabled": true, "destOverride": ["tls"]
+                }}],
+                "routing": {"rules": [rule]},
+                "outbounds": [{"tag": "vpn", "protocol": "vless"}]
+            });
+            assert!(prepare(profile, 19123).is_err());
+        }
     }
 
     #[test]
