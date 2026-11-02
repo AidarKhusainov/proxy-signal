@@ -303,7 +303,7 @@ pub async fn check(profile: Value, case: &FailoverScenario, budget: Duration) ->
     }
     match tokio::time::timeout(budget, run(profile, case, config, budget)).await {
         Ok(Ok(checks)) => checks,
-        Err(_) => {
+        _ => {
             let u = Observation::new(Status::Unknown, "failover_lab_runtime_unavailable");
             Checks {
                 config,
