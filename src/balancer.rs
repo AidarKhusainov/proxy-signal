@@ -140,7 +140,7 @@ pub fn attributable(profile: &Value, case: &BalancerScenario) -> bool {
         return false;
     };
     object.get("type").and_then(Value::as_str) == Some("field")
-        && object.get("balancerTag").and_then(Value::as_str) == Some(&case.balancer_tag)
+        && object.get("balancerTag").and_then(Value::as_str) == Some(case.balancer_tag.as_str())
         && object.keys().all(|key| matches!(key.as_str(), "type" | "domain" | "balancerTag" | "ruleTag"))
         && rule.get("domain").and_then(Value::as_array).is_some_and(|v| {
             v.len() == 1 && v[0].as_str().is_some_and(|domain| domain == format!("full:{host}"))
