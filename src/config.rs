@@ -55,6 +55,17 @@ pub struct CascadeScenario {
     pub outbounds: Vec<String>,
 }
 
+/// An independent HTTPS endpoint probe plus a full-profile XHTTP outbound probe.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CdnScenario {
+    pub id: String,
+    pub endpoint_url: String,
+    pub expected_http_status: u16,
+    pub url: String,
+    pub outbound_tag: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BalancerStrategy {
@@ -112,6 +123,8 @@ pub enum Source {
         balancers: Vec<BalancerScenario>,
         #[serde(default)]
         cascades: Vec<CascadeScenario>,
+        #[serde(default)]
+        cdn: Vec<CdnScenario>,
     },
     Https {
         id: String,
@@ -126,6 +139,8 @@ pub enum Source {
         balancers: Vec<BalancerScenario>,
         #[serde(default)]
         cascades: Vec<CascadeScenario>,
+        #[serde(default)]
+        cdn: Vec<CdnScenario>,
     },
 }
 
@@ -148,6 +163,11 @@ impl Source {
     pub fn cascades(&self) -> &[CascadeScenario] {
         match self {
             Self::File { cascades, .. } | Self::Https { cascades, .. } => cascades,
+        }
+    }
+    pub fn cdn(&self) -> &[CdnScenario] {
+        match self {
+            Self::File { cdn, .. } | Self::Https { cdn, .. } => cdn,
         }
     }
     pub fn expected_exit_ips(&self) -> &[IpAddr] {
@@ -206,6 +226,7 @@ impl Config {
         let mut total_scenarios = 0;
         let mut total_balancers = 0;
         let mut total_cascades = 0;
+        let mut total_cdn = 0;
         for source in &self.sources {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
@@ -346,6 +367,41 @@ impl Config {
                     bail!("invalid cascade expectation");
                 }
             }
+            total_cdn += source.cdn().len();
+            if source.cdn().len() > 4 || total_cdn > 8 {
+                bail!("too many CDN scenarios");
+            }
+            for case in source.cdn() {
+                if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
+                    bail!("invalid or duplicate CDN scenario id");
+                }
+                let endpoint = validate_https(&case.endpoint_url)?;
+                let url = validate_https(&case.url)?;
+                if !(100..=599).contains(&case.expected_http_status)
+                    || !valid_tag(&case.outbound_tag)
+                    || endpoint.host_str() == url.host_str()
+                {
+                    bail!("invalid CDN expectation");
+                }
+                let destination = (
+                    url.host_str().unwrap_or("").to_owned(),
+                    url.port_or_known_default(),
+                );
+                if !destinations.insert(destination.clone()) {
+                    bail!("duplicate scenario destination");
+                }
+                if self.endpoints.iter().any(|e| {
+                    let Ok(endpoint_url) = validate_https(&e.url) else {
+                        return false;
+                    };
+                    (
+                        endpoint_url.host_str().unwrap_or("").to_owned(),
+                        endpoint_url.port_or_known_default(),
+                    ) == destination
+                }) {
+                    bail!("CDN tunnel destination overlaps egress endpoint");
+                }
+            }
             if distinct_candidates.len() > 8 {
                 bail!("too many distinct balancer candidates");
             }
@@ -476,6 +532,7 @@ mod tests {
         assert!(old.scenarios().is_empty());
         assert!(old.balancers().is_empty());
         assert!(old.cascades().is_empty());
+        assert!(old.cdn().is_empty());
         let example = "kind: file\nid: node\npath: /tmp/profile.json\nscenarios:\n  - id: dns-direct\n    url: https://example.org/\n    route: direct\n    outbound_tag: direct\n    dns:\n      server: UDP:1.1.1.1:53\n      expected_ips: [93.184.215.14]\n";
         let new: Source = serde_yaml::from_str(example).unwrap();
         assert_eq!(new.scenarios().len(), 1);
@@ -502,6 +559,15 @@ mod tests {
         assert!(
             serde_yaml::from_str::<Source>(&yaml.replace("    outbounds:", "    hops:")).is_err()
         );
+    }
+
+    #[test]
+    fn cdn_configuration_is_optional_and_strict() {
+        let yaml = "kind: file\nid: node\npath: /tmp/profile.json\ncdn:\n  - id: edge\n    endpoint_url: https://cdn.example.org/status\n    expected_http_status: 404\n    url: https://example.com/\n    outbound_tag: vpn\n";
+        let source: Source = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(source.cdn().len(), 1);
+        assert!(serde_yaml::from_str::<Source>(&yaml.replace("expected_http_status: 404", "expected_http_status: 700")).is_ok());
+        assert!(serde_yaml::from_str::<Source>(&yaml.replace("outbound_tag: vpn", "unknown_field: vpn")).is_err());
     }
 
     #[test]
