@@ -65,6 +65,25 @@ The `/route` observation uses the original routing to probe the configured HTTPS
 
 These diagnostics temporarily add candidate-only routing rules and loopback listeners, not production changes. Only trusted full Xray profiles are supported; log contents are private, bounded and deleted after Xray stops. Allow sufficient `timeout_seconds` for sequential candidate tests. The manual Docker smoke includes a synthetic direct/failed SOCKS candidate pair; it does not verify a remote VPN or leastPing's latency decision.
 
+## Optional CDN / XHTTP scenarios (stage 3)
+
+Configure `cdn` only for full Xray profiles whose VPN outbound uses XHTTP over TLS. This check does **not** configure CDN failover or modify any Xray route. Use a public, operator-approved HTTPS endpoint for the independent CDN probe, and a **different** HTTPS destination for a real request through Xray. Example:
+
+```yaml
+cdn:
+  - id: edge
+    endpoint_url: https://cdn.example.org/health
+    expected_http_status: 404
+    url: https://example.com/
+    outbound_tag: vpn-xhttp
+```
+
+The outbound must explicitly use `streamSettings.network: xhttp`, `security: tls`, `tlsSettings.serverName: cdn.example.org` and an `xhttpSettings.path` beginning with `/`. When `xhttpSettings.host` is provided it must match the endpoint hostname; `mode` may be `auto`, `packet-up`, or `stream-up`. Insecure TLS is unsupported. The endpoint URL path and XHTTP path are **not** assumed to be the same: a CDN health URL may differ from the proxy transport URL. Static checks only validate the declared intent, not server-side configuration.
+
+Each `cdn/<source>/<id>` has distinct `dns`, `tls`, `http`, `endpoint`, `config`, `tunnel`, `route`, and aggregate observations. The direct probe resolves public DNS and pins the results against DNS rebinding; it performs a TLS-verified HTTPS GET without redirects and checks **exact** HTTP status, including expected 4xx. Connection errors cannot always distinguish TCP refusal from TLS failure and use `cdn_tls_or_connect_failed` rather than claiming a specific certificate defect. Expired time budgets and unavailable evidence are not OK. The tunnel probe runs a real TLS-verified HTTPS request through the unchanged full Xray routing and requires an unambiguous access-log record for the expected outbound. Like cascade tests, only an exact first `full:<test-host>` routing rule permits conservative attribution.
+
+Neither independent CDN GET nor the Xray access log proves a specific CDN edge or complete CDN transit: `/route` remains `UNKNOWN/cdn_route_unverified` without separate trusted evidence. Even when endpoint and tunnel are both OK, the aggregate remains `UNKNOWN`, **not** OK. A confirmed partial loss is `DEGRADED` if the other check is healthy; otherwise a confirmed loss is `FAILED`. A prior CDN endpoint/tunnel outage can retire with an explicit `UNKNOWN` notification once both recover, without announcing a fully verified path. Limits: 4 CDN scenarios/source, 8 total, unique tunnel destinations within the source. Tests use only public hostnames and no insecure certificate overrides. A live positive HTTPS-over-VPN acceptance test requires independently authorized test credentials; a synthetic failure cannot prove a working CDN tunnel.
+
 ## Optional Xray cascade scenarios (stage 3)
 
 Set `cascades` under a source to check one ordered chain in the **original full JSON**. The `outbounds` list names the outbound selected by routing first, then every successive dialer; it is not a list of interchangeable nodes. Chains of 2–8 unique outbound tags are supported, with at most 4 scenarios per source / 8 total. IDs and HTTPS destination host:port pairs must not collide with other scenarios or egress endpoints.
@@ -80,7 +99,7 @@ The `cascade/<source>/<id>/config` check validates unique outbound tags, protoco
 
 The `/https` check makes a TLS-verified request through the unmodified routing path in the supervised Xray process. It requires the **first exact `full:<hostname>` routing rule** to select the chain's first outbound and an unambiguous Xray access record for that inbound and destination. Wrong selection or confirmed HTTPS failure is `FAILED`, missing/ambiguous evidence is `UNKNOWN`. Complex rules are conservatively `UNKNOWN` even when the HTTPS request succeeds.
 
-The `/hops` result is **`UNKNOWN/cascade_hops_unverified`**: normal Xray access records prove the selected outbound but cannot attest each subsequent physical hop or its order. The aggregate stays `UNKNOWN` when configuration and HTTPS are both `OK` but hop proof is absent; a confirmed failed connection is `FAILED`. `OK` is reserved for complete proof and is not currently achievable for a general live profile without independent trusted per-hop evidence. Neither egress-IP differences nor the static dialer graph can replace that evidence. These tests do not measure hop latency, prove geographic location, simulate failures or validate CDN.
+The `/hops` result is **`UNKNOWN/cascade_hops_unverified`**: normal Xray access records prove the selected outbound but cannot attest each subsequent physical hop or its order. The aggregate stays `UNKNOWN` when configuration and HTTPS are both `OK` but hop proof is absent; a confirmed failed connection is `FAILED`. A previously confirmed HTTPS failure closes when HTTPS and its first outbound are verified again, but with an explicit `UNKNOWN` notification because intermediate-hop evidence remains missing. A failed hop attestation or unverified HTTPS does not qualify for that recovery. `OK` is reserved for complete proof and is not currently achievable for a general live profile without independent trusted per-hop evidence. Neither egress-IP differences nor the static dialer graph can replace that evidence. These tests do not measure hop latency, prove geographic location, simulate failures or validate CDN.
 
 For an isolated manual integration test with two disposable Xray SOCKS relays and a real HTTPS request, build the image and run `sh scripts/smoke-cascade-docker.sh`. It creates an ephemeral Docker bridge without public ports, uses nonroot read-only resource-limited containers, inspects relay-side access logs, and removes everything afterward. Its **controlled test-side observations** verify the synthetic path but are deliberately not used as production telemetry. Do not run the script against a shared host without an approved preflight.
 
@@ -101,7 +120,7 @@ The included `examples/example.json` contains **only a direct outbound** and int
 
 One cycle can be run manually with `proxy-signal /etc/proxy-signal/config.yaml --once` (nonzero exit if any check is not `OK`). Defaults/limits are explicit in YAML: interval 30–86400 seconds, per-profile deadline 5–60 seconds, concurrency 1–4, at most 32 sources and 3 echo endpoints. Profile inputs are limited to 512 KiB, echo bodies to 64 bytes, response redirects disabled, and TLS certificates verified. Process output is suppressed to prevent credential leakage. Container has read-only root, no privileges, limits on processes, memory, CPU and temporary disk. The persistent `/data` directory is pre-owned by the unprivileged UID, including on first volume creation. Persist `/data` to retain incidents; never run two replicas sharing the same state file.
 
-Incidents require **two matching consecutive** `FAILED` or `DEGRADED` outcomes per `source/<id>` or `profile/<id>`. An incident recovers only when its specific evidence is sufficient; an unknown cascade never produces an OK recovery. `UNKNOWN` and `UNSUPPORTED` never close one. Telegram alerts are queued durably before sending (up to 128 pending transitions), retried next cycle on delivery failure, and sent once per transition (at-least-once delivery; duplicates are possible if the process crashes after Telegram accepts a message but before the acknowledgement is persisted). Durable history is limited to incident state and pending alerts, not per-check time series. This release does not implement retention/reporting of historical observations.
+Incidents require **two matching consecutive** `FAILED` or `DEGRADED` outcomes per `source/<id>` or `profile/<id>`. An incident recovers only when its specific evidence is sufficient. A previously confirmed cascade HTTPS outage can retire on verified HTTPS recovery with an `UNKNOWN` notice while hop attestation stays unavailable. CDN endpoint/tunnel recovery follows the same rule. Unrelated or unverified `UNKNOWN`/`UNSUPPORTED` outcomes never close incidents, and a missing complete-route proof never sends an `OK` recovery. Telegram alerts are queued durably before sending (up to 128 pending transitions), retried next cycle on delivery failure, and sent once per transition (at-least-once delivery; duplicates are possible if the process crashes after Telegram accepts a message but before the acknowledgement is persisted). Durable history is limited to incident state and pending alerts, not per-check time series. This release does not implement retention/reporting of historical observations.
 
 ## Development and acceptance
 
@@ -124,7 +143,7 @@ Offline tests cover full-profile retention, inbound-dependent unsupported paths,
 - **Routing:** optional HTTPS domain cases confirm the selected outbound via Xray access logs; IP-specific routing, client sniffing and full rule-order coverage remain outside this block.
 - **leastPing/balancers:** optional candidate HTTPS availability and conservative route-tag evidence are implemented; observer RTTs, actual leastPing policy ranking and automatic switching remain unverified.
 - **Cascades:** ordered graph and real HTTPS checks are available. Independently authenticated hop traversal remains unverified outside controlled tests.
-- **CDN:** dedicated TLS/SNI/WS/gRPC transport checks, reachability from monitoring locations, and expected CDN edge or fallback path.
+- **CDN:** XHTTP/TLS configuration, DNS/TLS/HTTP endpoint reachability and full-Xray HTTPS tunnel checks are implemented. Confirmed CDN-edge traversal, alternative WS/gRPC transport checks and fallback switching remain unverified.
 - **Failover:** controlled fault injection inside isolated test executions and evidence of automatic rerouting within a deadline; never modify production nodes or firewall.
 
 All of these require separately defined scenarios and stronger engine/route telemetry. Remaining advanced guarantees require controlled test profiles and stronger engine telemetry.
