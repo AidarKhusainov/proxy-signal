@@ -95,6 +95,7 @@ mod tests {
             balancers: Vec::new(),
             cascades: Vec::new(),
             cdn: Vec::new(),
+            failover: Vec::new(),
         };
         std::fs::write(&path, vec![b' '; MAX_PROFILE + 1]).unwrap();
         assert!(load(&source, Duration::from_secs(5)).await.is_err());
