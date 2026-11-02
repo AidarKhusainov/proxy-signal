@@ -1028,6 +1028,18 @@ mod tests {
             scenario::evaluate(&case, true, "", "").status,
             Status::Unknown
         );
+        // HTTPS alone must neither prove the intended sniffed-domain route nor
+        // hide a different outbound when Xray's access log contradicts it.
+        let wrong = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [proxy-signal-probe-in ==> direct]";
+        let correct = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [proxy-signal-probe-in ==> vpn]";
+        assert_eq!(
+            scenario::evaluate(&case, true, wrong, "").status,
+            Status::Failed
+        );
+        assert_eq!(
+            scenario::evaluate(&case, true, correct, "").status,
+            Status::Ok
+        );
     }
 
     #[test]
