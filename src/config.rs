@@ -311,7 +311,13 @@ impl Config {
             if !valid_id(source.id()) || !ids.insert(source.id()) {
                 bail!("invalid or duplicated source id");
             }
-            if let Source::Https { url, headers, profiles, .. } = source {
+            if let Source::Https {
+                url,
+                headers,
+                profiles,
+                ..
+            } = source
+            {
                 validate_https(url)?;
                 if headers.len() > 8 {
                     bail!("too many authorization headers");
@@ -320,10 +326,14 @@ impl Config {
                     reqwest::header::HeaderName::from_bytes(name.as_bytes())
                         .context("invalid header name")?;
                 }
-                if !profiles.is_empty() && (!source.scenarios().is_empty()
-                    || !source.balancers().is_empty() || !source.cascades().is_empty()
-                    || !source.cdn().is_empty() || !source.failover().is_empty()
-                    || !source.expected_exit_ips().is_empty()) {
+                if !profiles.is_empty()
+                    && (!source.scenarios().is_empty()
+                        || !source.balancers().is_empty()
+                        || !source.cascades().is_empty()
+                        || !source.cdn().is_empty()
+                        || !source.failover().is_empty()
+                        || !source.expected_exit_ips().is_empty())
+                {
                     bail!("checks belong to individual selected profiles");
                 }
                 if profiles.len() > 16 {
@@ -332,10 +342,13 @@ impl Config {
                 let mut profile_ids = HashSet::new();
                 let mut remarks = HashSet::new();
                 for profile in profiles {
-                    if !valid_id(&profile.id) || !profile_ids.insert(&profile.id)
-                        || profile.remarks.is_empty() || profile.remarks.len() > 256
+                    if !valid_id(&profile.id)
+                        || !profile_ids.insert(&profile.id)
+                        || profile.remarks.is_empty()
+                        || profile.remarks.len() > 256
                         || profile.remarks.chars().any(char::is_control)
-                        || !remarks.insert(&profile.remarks) {
+                        || !remarks.insert(&profile.remarks)
+                    {
                         bail!("invalid or duplicate profile mapping");
                     }
                 }
@@ -747,7 +760,14 @@ mod tests {
         let base = "version: 1\\ninterval_seconds: 300\\ntimeout_seconds: 20\\nparallelism: 2\\nstate_file: /tmp/state.json\\nendpoints:\\n  - { id: ip, url: https://example.com/ip }\\nsources:\\n  - id: happ\\n    kind: https\\n    url: https://subscription.example.org/data\\n    profiles:\\n      - { id: one, remarks: One }\\n      - { id: two, remarks: Two }\\n";
         let parsed: Config = serde_yaml::from_str(base).unwrap();
         assert!(parsed.validate().is_ok());
-        assert_eq!(parsed.sources[0].expanded().iter().map(Source::id).collect::<Vec<_>>(), vec!["happ/one", "happ/two"]);
+        assert_eq!(
+            parsed.sources[0]
+                .expanded()
+                .iter()
+                .map(Source::id)
+                .collect::<Vec<_>>(),
+            vec!["happ/one", "happ/two"]
+        );
         for invalid in [
             base.replace("id: two", "id: one"),
             base.replace("remarks: Two", "remarks: One"),
