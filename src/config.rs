@@ -375,11 +375,10 @@ impl Config {
                 if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
                     bail!("invalid or duplicate CDN scenario id");
                 }
-                let endpoint = validate_https(&case.endpoint_url)?;
+                validate_https(&case.endpoint_url)?;
                 let url = validate_https(&case.url)?;
                 if !(100..=599).contains(&case.expected_http_status)
                     || !valid_tag(&case.outbound_tag)
-                    || endpoint.host_str() == url.host_str()
                 {
                     bail!("invalid CDN expectation");
                 }
