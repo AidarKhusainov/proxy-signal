@@ -301,8 +301,8 @@ pub async fn check(profile: Value, case: &FailoverScenario, budget: Duration) ->
     if config.status != Status::Ok {
         return missing(config);
     }
-    match run(profile, case, config, budget).await {
-        Ok(checks) => checks,
+    match tokio::time::timeout(budget, run(profile, case, config, budget)).await {
+        Ok(Ok(checks)) => checks,
         Err(_) => {
             let u = Observation::new(Status::Unknown, "failover_lab_runtime_unavailable");
             Checks {
@@ -330,11 +330,18 @@ async fn run(
     let probe_port = port()?;
     let mut prepared = xray::prepare(profile, probe_port)?;
     let mut candidates = Vec::new();
+    let mut used_ports = HashSet::from([case.control_port, probe_port]);
     for (index, tag) in case.alternatives.iter().enumerate() {
+        let candidate_port = loop {
+            let available = port()?;
+            if used_ports.insert(available) {
+                break available;
+            }
+        };
         candidates.push((
             tag.clone(),
             format!("proxy-signal-failover-{index}"),
-            port()?,
+            candidate_port,
         ));
     }
     xray::install_candidate_diagnostics(&mut prepared, &candidates)?;
@@ -363,18 +370,36 @@ async fn run(
             Phase::Primary,
         )
         .await;
+        // Run all diagnostic outbound probes independently. A stalled backup
+        // cannot prevent another backup from producing useful evidence.
+        let candidate_deadline = Instant::now() + phase_budget;
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, (_, _, candidate_port)) in candidates.iter().enumerate() {
+            let url = case.url.clone();
+            let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
+            tasks.spawn(async move {
+                (
+                    index,
+                    timeout_at(
+                        candidate_deadline,
+                        probe::probe_https(&url, &candidate_proxy, phase_budget),
+                    )
+                    .await
+                    .ok(),
+                )
+            });
+        }
+        let mut responses = vec![None; candidates.len()];
+        while let Some(Ok((index, result))) = tasks.join_next().await {
+            responses[index] = result;
+        }
+        let access = access_delta(&access_path, &mut cursor);
         let mut successes = 0;
         let mut failures = 0;
-        for (tag, inbound, candidate_port) in &candidates {
-            let url = format!("http://127.0.0.1:{candidate_port}");
-            let limit = Instant::now() + phase_budget;
-            let http = timeout_at(limit, probe::probe_https(&case.url, &url, phase_budget))
-                .await
-                .ok();
-            let access = access_delta(&access_path, &mut cursor);
-            match (http, access) {
+        for ((tag, inbound, _), response) in candidates.iter().zip(responses) {
+            match (response, access.as_deref()) {
                 (Some(ok), Some(log))
-                    if scenario::observed_outbound(&case.url, inbound, &log)
+                    if scenario::observed_outbound(&case.url, inbound, log)
                         == Ok(tag.as_str()) =>
                 {
                     if ok {
