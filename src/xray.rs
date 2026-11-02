@@ -696,6 +696,77 @@ impl Drop for ManagedChild {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(") ").map(|(_, tail)| tail.starts_with('Z')))
+            .is_some_and(|zombie| !zombie)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stops_descendants_after_the_group_leader_has_exited() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let child_pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & echo $! > \"$1\"")
+            .arg("test-descendant")
+            .arg(&child_pid_file)
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        let mut managed = ManagedChild::new(command.spawn().unwrap());
+        tokio::time::timeout(Duration::from_secs(2), managed.child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        let descendant: u32 = std::fs::read_to_string(child_pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(process_is_running(descendant));
+        managed.stop().await;
+        let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+            while process_is_running(descendant) {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Keep the failing regression itself from leaking its fixture process.
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(descendant as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        assert!(stopped.is_ok(), "supervised descendant outlived its leader");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn repeated_cancelled_children_are_killed_and_reaped() {
+        use std::os::unix::process::CommandExt;
+
+        for _ in 0..5 {
+            let mut command = Command::new("sleep");
+            command.arg("30").kill_on_drop(true);
+            command.as_std_mut().process_group(0);
+            let managed = ManagedChild::new(command.spawn().unwrap());
+            let pid = managed.child.id().unwrap();
+            drop(managed);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancelled child was not reaped");
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn stops_child_after_timeout() {

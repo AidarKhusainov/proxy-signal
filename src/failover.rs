@@ -151,6 +151,16 @@ pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
     Observation::new(Status::Ok, "failover_config_valid")
 }
 
+fn backup_status(total: usize, successes: usize, failures: usize) -> Observation {
+    if successes > 0 {
+        Observation::new(Status::Ok, "failover_backup_https_verified")
+    } else if failures == total {
+        Observation::new(Status::Failed, "failover_all_backups_https_failed")
+    } else {
+        Observation::new(Status::Unknown, "failover_backups_unverified")
+    }
+}
+
 pub fn overall(
     config: Observation,
     primary: Observation,
@@ -410,13 +420,7 @@ async fn run(
                 _ => {}
             }
         }
-        let backup = if successes > 0 {
-            Observation::new(Status::Ok, "failover_backup_https_verified")
-        } else if failures == candidates.len() {
-            Observation::new(Status::Failed, "failover_all_backups_https_failed")
-        } else {
-            Observation::new(Status::Unknown, "failover_backups_unverified")
-        };
+        let backup = backup_status(candidates.len(), successes, failures);
         let mut switch = Observation::new(Status::Unknown, "failover_switch_not_executed");
         let mut recovery = Observation::new(Status::Unknown, "failover_recovery_not_requested");
         if primary.status == Status::Ok && backup.status == Status::Ok {
@@ -532,6 +536,77 @@ mod tests {
         assert_eq!(overall(ok, ok, ok, ok, u, true).status, Status::Unknown);
         assert_eq!(overall(ok, ok, ok, ok, ok, true).status, Status::Ok);
     }
+
+    #[test]
+    fn multiple_backup_status_requires_complete_success_evidence() {
+        for (total, successes, failures, expected) in [
+            (1, 1, 0, Status::Ok),
+            (2, 2, 0, Status::Ok),
+            (2, 1, 1, Status::Degraded),
+            (3, 1, 1, Status::Degraded),
+            (2, 1, 0, Status::Unknown),
+            (2, 0, 1, Status::Unknown),
+            (2, 0, 2, Status::Failed),
+            (2, 0, 0, Status::Unknown),
+            (0, 0, 0, Status::Unknown),
+        ] {
+            assert_eq!(
+                backup_status(total, successes, failures).status,
+                expected,
+                "total={total}, successes={successes}, failures={failures}"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_switch_does_not_hide_partial_backup_outage() {
+        let ok = Observation::new(Status::Ok, "ok");
+        let partial = Observation::new(Status::Degraded, "partial_backups");
+        let unknown = Observation::new(Status::Unknown, "unobserved");
+        for (recovery, restore) in [(ok, true), (unknown, false)] {
+            let result = overall(ok, ok, partial, ok, recovery, restore);
+            assert_eq!(result.status, Status::Degraded);
+            assert_eq!(result.code, "failover_partial_backups");
+        }
+    }
+
+    #[test]
+    fn partial_backup_outage_remains_known_when_switch_is_unverified() {
+        let ok = Observation::new(Status::Ok, "ok");
+        let partial = Observation::new(Status::Degraded, "partial_backups");
+        let unknown = Observation::new(Status::Unknown, "unobserved");
+        let result = overall(ok, ok, partial, unknown, unknown, true);
+        assert_eq!(result.status, Status::Degraded);
+        assert_eq!(result.code, "failover_partial_backups");
+    }
+
+    #[test]
+    fn confirmed_failures_take_precedence_over_partial_backup_outage() {
+        let ok = Observation::new(Status::Ok, "ok");
+        let partial = Observation::new(Status::Degraded, "partial_backups");
+        let failed = Observation::new(Status::Failed, "confirmed_failure");
+        let unknown = Observation::new(Status::Unknown, "unobserved");
+        for (primary, backup, switch, code) in [
+            (failed, partial, ok, "failover_primary_failed"),
+            (ok, failed, unknown, "failover_backups_failed"),
+            (ok, partial, failed, "failover_switch_failed"),
+            (ok, unknown, failed, "failover_switch_failed"),
+        ] {
+            let result = overall(ok, primary, backup, switch, unknown, false);
+            assert_eq!(result.status, Status::Failed);
+            assert_eq!(result.code, code);
+        }
+    }
+
+    #[test]
+    fn verified_switch_does_not_prove_unobserved_backups_healthy() {
+        let ok = Observation::new(Status::Ok, "ok");
+        let unknown = Observation::new(Status::Unknown, "unobserved");
+        let result = overall(ok, ok, unknown, ok, ok, true);
+        assert_eq!(result.status, Status::Unknown);
+        assert_eq!(result.code, "failover_incomplete_evidence");
+    }
+
     #[tokio::test]
     async fn occupied_control_port_cannot_be_modified() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

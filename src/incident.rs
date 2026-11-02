@@ -500,4 +500,202 @@ mod tests {
         );
         assert_eq!(loaded.pending.len(), 2);
     }
+
+    #[test]
+    fn same_severity_failure_reason_survives_restart_without_false_recovery() {
+        for (key, initial, replacement, partial_recovery) in [
+            (
+                "balancer/source/pool",
+                "balancer_all_candidates_failed",
+                "balancer_route_failed",
+                "balancer_candidates_healthy_route_unverified",
+            ),
+            (
+                "cascade/source/chain",
+                "cascade_https_failed",
+                "cascade_hops_failed",
+                "cascade_https_healthy_hops_unverified",
+            ),
+            (
+                "cdn/source/edge",
+                "cdn_tunnel_failed",
+                "cdn_route_failed",
+                "cdn_endpoint_tunnel_healthy_route_unverified",
+            ),
+            (
+                "failover/source/lab",
+                "failover_primary_failed",
+                "failover_switch_failed",
+                "failover_routes_healthy_switch_unverified",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            let mut state = State::default();
+            for code in [initial, initial, replacement, replacement] {
+                state.observe(key, Observation::new(Status::Failed, code), true);
+            }
+            assert_eq!(state.pending.len(), 1);
+            state.persist(&path).unwrap();
+            let mut restored = State::load(&path).unwrap();
+            restored.observe(
+                key,
+                Observation::new(Status::Unknown, partial_recovery),
+                true,
+            );
+            assert_eq!(restored.records[key].active, Some(Status::Failed), "{key}");
+            assert_eq!(restored.pending.len(), 1, "{key}");
+        }
+    }
+
+    #[test]
+    fn later_partial_failure_does_not_erase_an_unverified_prior_failure() {
+        let key = "cascade/source/chain";
+        let mut state = State::default();
+        for code in [
+            "cascade_hops_failed",
+            "cascade_hops_failed",
+            "cascade_https_failed",
+            "cascade_https_failed",
+        ] {
+            state.observe(key, Observation::new(Status::Failed, code), true);
+        }
+        state.observe(
+            key,
+            Observation::new(Status::Unknown, "cascade_https_healthy_hops_unverified"),
+            true,
+        );
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.records[key].active, Some(Status::Failed));
+        state.observe(
+            key,
+            Observation::new(Status::Ok, "cascade_verified"),
+            true,
+        );
+        assert_eq!(state.pending.len(), 2);
+        assert_eq!(state.pending[1].status, Status::Ok);
+        assert_eq!(state.records[key].active, None);
+    }
+
+    #[test]
+    fn unavailable_source_does_not_erase_confirmed_vpn_incident_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        for _ in 0..2 {
+            state.observe(
+                "profile/source",
+                Observation::new(Status::Failed, "all_egress_probes_failed"),
+                true,
+            );
+        }
+        state.pending.clear(); // The confirmed VPN failure was already acknowledged.
+        for _ in 0..2 {
+            state.observe(
+                "source/source",
+                Observation::new(Status::Failed, "source_unavailable"),
+                true,
+            );
+            state.observe(
+                "profile/source",
+                Observation::new(Status::Unknown, "source_unavailable"),
+                true,
+            );
+        }
+        state.persist(&path).unwrap();
+        let mut restored = State::load(&path).unwrap();
+        assert_eq!(restored.records["profile/source"].active, Some(Status::Failed));
+        assert_eq!(restored.pending.len(), 1);
+        assert_eq!(restored.pending[0].key, "source/source");
+        restored.observe(
+            "profile/source",
+            Observation::new(Status::Failed, "all_egress_probes_failed"),
+            true,
+        );
+        assert_eq!(restored.pending.len(), 1); // No duplicate VPN outage.
+        restored.observe(
+            "profile/source",
+            Observation::new(Status::Ok, "egress_verified"),
+            true,
+        );
+        assert_eq!(restored.pending.len(), 2);
+        assert_eq!(restored.pending[1].key, "profile/source");
+        assert_eq!(restored.pending[1].status, Status::Ok);
+    }
+
+    #[test]
+    fn every_record_from_a_maximum_sized_configuration_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        let mut keys = Vec::new();
+        // Current validated maxima: 32 sources, 64 scenarios, 8 balancers
+        // with 8 candidates, 8 cascades, 8 CDN cases and 4 failover cases.
+        for source in 0..32 {
+            keys.push(format!("source/s{source}"));
+            keys.push(format!("profile/s{source}"));
+        }
+        for scenario in 0..64 {
+            keys.push(format!("scenario/s{}/c{scenario}", scenario / 8));
+        }
+        for case in 0..8 {
+            for component in ["", "/config", "/candidates", "/route"] {
+                keys.push(format!("balancer/s{case}/b{case}{component}"));
+            }
+            for candidate in 0..8 {
+                keys.push(format!("balancer/s{case}/b{case}/candidate/{candidate}"));
+            }
+            for component in ["", "/config", "/https", "/hops"] {
+                keys.push(format!("cascade/s{case}/c{case}{component}"));
+            }
+            for component in [
+                "",
+                "/dns",
+                "/tls",
+                "/http",
+                "/endpoint",
+                "/config",
+                "/tunnel",
+                "/route",
+            ] {
+                keys.push(format!("cdn/s{case}/d{case}{component}"));
+            }
+        }
+        for case in 0..4 {
+            for component in ["", "/config", "/primary", "/backup", "/switch", "/recovery"] {
+                keys.push(format!("failover/s{case}/f{case}{component}"));
+            }
+        }
+        for key in &keys {
+            state.observe(key, Observation::new(Status::Unknown, "not_observed"), false);
+        }
+        state.persist(&path).unwrap();
+        let restored = State::load(&path).unwrap();
+        assert_eq!(restored.records.len(), 344);
+        for key in keys {
+            assert_eq!(restored.records[&key].last_status, Some(Status::Unknown));
+        }
+    }
+
+    #[test]
+    fn oversized_state_does_not_replace_the_last_reloadable_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        state.observe("profile/a", Observation::new(Status::Failed, "tls"), true);
+        state.persist(&path).unwrap();
+        let checkpoint = fs::read(&path).unwrap();
+        for index in 0..1024 {
+            state.observe(
+                &format!("profile/extra-{index}"),
+                Observation::new(Status::Unknown, "not_observed"),
+                false,
+            );
+        }
+        assert!(state.persist(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), checkpoint);
+        let mut restored = State::load(&path).unwrap();
+        restored.observe("profile/a", Observation::new(Status::Failed, "tls"), true);
+        assert_eq!(restored.pending.len(), 1);
+    }
 }
