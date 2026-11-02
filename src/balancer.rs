@@ -222,11 +222,16 @@ pub fn route(
         Ok(tag) => tag,
         Err(_) => return Observation::new(Status::Unknown, "balancer_route_unobserved"),
     };
-    if !case.candidates.iter().any(|c| c == actual) {
-        return Observation::new(Status::Failed, "balancer_unexpected_outbound");
-    }
     if !http_ok {
         return Observation::new(Status::Failed, "balancer_https_failed");
+    }
+    // Access logs cannot distinguish an ordinary selection from fallback when
+    // both use the same outbound. A configured fallback is not policy proof.
+    if case.fallback_tag.as_deref() == Some(actual) {
+        return Observation::new(Status::Unknown, "balancer_fallback_unverified");
+    }
+    if !case.candidates.iter().any(|c| c == actual) {
+        return Observation::new(Status::Failed, "balancer_unexpected_outbound");
     }
     match case.strategy {
         BalancerStrategy::LeastPing | BalancerStrategy::LeastLoad => {
@@ -319,6 +324,14 @@ mod tests {
         assert_eq!(
             route(&c, true, Some(true), Some(&log.replace("node-a", "direct"))).status,
             Status::Failed
+        );
+        let mut fallback = c.clone();
+        fallback.fallback_tag = Some("node-a".into());
+        assert_eq!(route(&fallback, true, Some(true), Some(log)).status, Status::Unknown);
+        fallback.fallback_tag = Some("direct".into());
+        assert_eq!(
+            route(&fallback, true, Some(true), Some(&log.replace("node-a", "direct"))).status,
+            Status::Unknown
         );
         let good = Observation::new(Status::Ok, "good");
         let bad = Observation::new(Status::Failed, "bad");
