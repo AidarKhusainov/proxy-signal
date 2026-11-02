@@ -101,6 +101,7 @@ pub struct BalancerChecks {
     pub candidates: Observation,
     pub candidate_details: Vec<Observation>,
     pub route: Observation,
+    pub selected_candidate_index: Option<usize>,
     pub overall: Observation,
 }
 
@@ -321,6 +322,7 @@ pub async fn check(
                             })
                             .collect(),
                         route: Observation::new(Status::Unsupported, "balancer_config_invalid"),
+                        selected_candidate_index: None,
                         overall: config,
                     };
                 }
@@ -350,12 +352,27 @@ pub async fn check(
                     attempt.route_http,
                     logs.as_ref().and_then(|(access, _)| access.as_deref()),
                 );
+                // Report only an index into the configured candidate list:
+                // outbound tags themselves may contain operator-sensitive labels.
+                let selected_candidate_index = if balancer::attributable(&original, case) {
+                    logs.as_ref()
+                        .and_then(|(access, _)| access.as_deref())
+                        .and_then(|access| {
+                            scenario::observed_outbound(
+                                &case.url, "proxy-signal-probe-in", access
+                            ).ok()
+                        })
+                        .and_then(|tag| case.candidates.iter().position(|candidate| candidate == tag))
+                } else {
+                    None
+                };
                 let overall = balancer::overall(config, candidates, route);
                 BalancerChecks {
                     config,
                     candidates,
                     candidate_details,
                     route,
+                    selected_candidate_index,
                     overall,
                 }
             })
