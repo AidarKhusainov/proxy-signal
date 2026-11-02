@@ -127,6 +127,9 @@ struct BalancerAttempt {
     candidate_http: Vec<Option<bool>>,
 }
 
+// Explicit small scenario lists keep the full-profile executor simple.
+// Avoid a new options layer for this single call site.
+#[allow(clippy::too_many_arguments)]
 pub async fn check(
     config: Value,
     endpoints: &[(Endpoint, Option<IpAddr>)],
