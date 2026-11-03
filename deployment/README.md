@@ -1,3 +1,11 @@
+# Production observer replacement: Gatus (2026-11-03)
+
+**Current operational state:** Gatus replaced both Kuma observers on `ger1` and `fin1`. The main ProxySignal instance remains on Hostland with its unchanged restricted SSH heartbeat timer. `ger1` accepts Gatus Push through the existing dedicated key/SSH port and performs a secondary HTTPS check; `fin1` performs the main HTTPS Pull. Both Gatus instances use built-in Telegram DOWN-only alerts, SQLite and localhost `127.0.0.1:3002`. Both Kuma containers/adapters were stopped and removed, while their original Docker volumes and consistent backup archives were retained.
+
+Live acceptance and rollback specifics: [Gatus migration runbook](gatus/README.md). Final read-only verification: [Actions 41614146392](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41614146392). Observed memory after removal: ger1 Gatus 7.328 MiB, fin1 Gatus 7.008 MiB (single snapshots, not long-term peaks). No VPN, Panel, firewall or existing Remnawave monitoring configuration was changed.
+
+---
+
 # ProxySignal parallel deployment: operating in parallel on Hostland
 
 The operator authorized the isolated permanent parallel instance on 2026-11-03.
