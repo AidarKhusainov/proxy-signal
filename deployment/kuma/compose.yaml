@@ -1,0 +1,54 @@
+# One independent project per selected VPN node. Do not start without approval.
+name: proxysignal-kuma-observer
+services:
+  kuma:
+    image: ${KUMA_IMAGE:?Set verified OCI image at @sha256 digest}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    environment:
+      UPTIME_KUMA_DB_TYPE: sqlite
+    cpus: 0.5
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 128
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - kuma-data:/app/data
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
+  down-only:
+    image: ${PYTHON_IMAGE:?Set verified Python OCI image at @sha256 digest}
+    pull_policy: never
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.1
+    environment:
+      MONITOR_NAME: ${KUMA_MONITOR_NAME:?Set the exact monitored name}
+      PROXYSIGNAL_ALERT_MODE: ${PROXYSIGNAL_ALERT_MODE:-test}
+      PYTHONDONTWRITEBYTECODE: "1"
+    command: ["python3", "/app/down-only.py"]
+    volumes:
+      - ./down-only.py:/app/down-only.py:ro
+      - ./private/down-alert-state:/data
+      - ./private/telegram-token:/run/secrets/telegram-token:ro
+      - ./private/telegram-chat-id:/run/secrets/telegram-chat-id:ro
+      - ./private/webhook-key:/run/secrets/webhook-key:ro
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
+volumes:
+  kuma-data:
