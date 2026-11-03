@@ -176,14 +176,16 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                     let actual_entries = document.as_array().map_or(1, Vec::len);
                     match source::select(&entry, document) {
                         Ok(selected) => {
-                            let complete =
-                                source::selection_complete(&selected, actual_entries);
+                            let complete = source::selection_complete(&selected, actual_entries);
                             results.push((
                                 format!("source/{}", entry.id()),
                                 if complete {
                                     Observation::new(Status::Ok, "source_loaded")
                                 } else {
-                                    Observation::new(Status::Failed, "source_profile_contract_failed")
+                                    Observation::new(
+                                        Status::Failed,
+                                        "source_profile_contract_failed",
+                                    )
                                 },
                             ));
                             for selected in selected {
