@@ -1,0 +1,11 @@
+[Unit]
+Description=Check ProxySignal parallel process and report independent heartbeat
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=proxy-signal-parallel-watchdog.service
+
+[Install]
+WantedBy=timers.target
