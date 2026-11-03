@@ -20,5 +20,32 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+  down-only:
+    image: ${PYTHON_IMAGE:?Set verified Python OCI image at @sha256 digest}
+    pull_policy: never
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.1
+    environment:
+      MONITOR_NAME: ${KUMA_MONITOR_NAME:?Set the exact monitored name}
+      PYTHONDONTWRITEBYTECODE: "1"
+    command: ["python3", "/app/down-only.py"]
+    volumes:
+      - ./down-only.py:/app/down-only.py:ro
+      - ./private/down-alert-state:/data
+      - ./private/telegram-token:/run/secrets/telegram-token:ro
+      - ./private/telegram-chat-id:/run/secrets/telegram-chat-id:ro
+      - ./private/webhook-key:/run/secrets/webhook-key:ro
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
 volumes:
   kuma-data:
