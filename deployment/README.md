@@ -130,6 +130,40 @@ those VPN alerts independently.
   send-before-state-write crash; validate it instead of claiming
   exactly-once semantics.
 
+## Final 2026-11-03 operational audit
+
+- The live Hostland timer is enabled, and its journal showed six successive
+  acknowledged heartbeats. The ProxySignal container was healthy, with nine
+  fresh persistent records. Both Kuma observer containers and DOWN-only
+  adapters were running in LIVE mode, and original VPN/Panel containers
+  remained up. Read-only evidence:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41603451366
+- One abandoned staging directory still contained an extra copy of the
+  dedicated SSH private key. The copy was confirmed identical to the deployed
+  restricted key, then only the abandoned directory and its five known files
+  were removed. No key rotation, production restart or firewall change was
+  necessary:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41603911928
+- The follow-up audit confirmed zero remaining `/tmp/proxysignal-*`
+  directories on Hostland, preserved root-only private key permissions,
+  active watchdog, healthy source and panel, two persistent Kuma SQLite
+  databases, LIVE adapters and intact RemnaNode/Caddy services:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41604024169
+
+**Recovery practice:** after host restart, verify `docker compose ps` for
+each *dedicated* project, Hostland's
+`proxy-signal-parallel-watchdog.timer` via `systemctl is-active`, and
+fresh Kuma UP heartbeat records. Do not mark recovery complete based only
+on Docker `Running` or `test -s state.json`; the source and all eight
+profiles must also be fresh. Keep the Kuma admin passwords, separate
+restricted SSH private key and PUSH token outside version control.
+Back up each isolated Kuma SQLite volume and ProxySignal state volume
+before any approved upgrade or rollback; use a consistent backup (SQLite
+online backup or a controlled stop of *only* the respective isolated
+monitoring container), never an uncoordinated live SQLite file copy.
+Backups and restores must not include or modify Remnawave's databases or
+Docker volumes.
+
 ## Runtime artifact provenance and drift
 
 The 2026-11-03 Hostland deployment runs a locally named
