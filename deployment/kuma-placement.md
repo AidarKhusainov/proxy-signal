@@ -31,26 +31,43 @@ do not update/restart/remount any existing container to install Kuma.
   URL. This tests externally observed reachability of the panel, **not**
   ProxySignal process health or actual VPN route.
 - Monitors operate independently with separate SQLite volumes and separate
-  Telegram identities/labels. Send only transition-to-DOWN notifications,
-  not periodic OK, repeated DOWN, or UP recovery events (verify the exact
-  notification options of the deployed Kuma release; a filtering webhook
-  may be needed). Two distinct DOWN messages on full Hostland outage are
-  expected. Do not introduce a shared coordination service solely to suppress
-  these two independent failure signals.
+  Telegram identities/labels. Only confirmed DOWN events must reach Telegram;
+  not periodic OK, repeated DOWN, or UP recovery events. As of 2026-11-03,
+  Uptime Kuma's built-in Telegram notification does **not** reliably provide
+  DOWN-only filtering (upstream issue #4744 remains open): do **not** enable it
+  directly for the approved chat until a tested local filtering adapter or
+  upstream event filter is available. Two distinct DOWN notices on a full
+  Hostland outage are acceptable; no shared suppression coordinator.
 
-## Security gate: protected Push ingress is NOT yet provisioned
+## Push transport: restricted existing SSH, no WireGuard
 
-Kuma's default HTTP server listens on port 3001. A free port DOES NOT mean
-a remotely reachable HTTPS service. For each node, keep the container
-bound only to **127.0.0.1:3001**. Never publish the UI on the public
-interface or attach the Docker socket. For ger1, the Push endpoint needs a
-*separately reviewed* authenticated and TLS-verified transport from Hostland,
-such as a pre-existing private inter-node network or a tightly scoped ingress
-that exposes ONLY the secret-bearing /api/push/<token> route. Do not hijack
-Remnawave's 443/Xray listener, change node firewall, or create a public
-reverse proxy without separate approval and a host-specific route review.
-TLS host key/name verification must remain on. Treat the push URL as a
-credential and keep it in a root-owned 0600 file at Hostland.
+On both observers, keep Uptime Kuma bound exclusively to
+**127.0.0.1:3001**, with no public listener or Docker socket. The Hostland
+watchdog sends heartbeat **once every five minutes** over existing SSH
+from Hostland to ger1 (inventory port 52222), with StrictHostKeyChecking=yes
+and the repository-pinned host key. No VPN mesh or new public port.
+
+Provision one NEW dedicated, unprivileged account `kuma-push` on ger1.
+Put a newly generated, *dedicated* Hostland public key in that account's
+authorized_keys with `restrict,command="/usr/local/bin/proxysignal-kuma-push"`,
+plus a verified `from="HOSTLAND_EGRESS_IP"` restriction if applicable.
+Never reuse or modify the ansible user's key. The forced command is
+deployment/kuma/ssh-push-receiver.py, installed as an executable at the
+specified absolute path. It reads a Kuma-generated push token from a
+ger1-only file at /etc/proxysignal-kuma-push/token, validates its shape,
+and sends a single HTTP GET to 127.0.0.1:3001. No remote shell, PTY,
+TCP forwarding, SSH agent forwarding or user-provided URL is permitted.
+The Hostland private key must be root-owned mode 0600 in
+/etc/proxy-signal-parallel/ssh/, and known_hosts must be built with the
+approved pinned host-key verifier, not with disabled host checks.
+**Do not execute deployment on any production node before separate
+explicit authorization and a checked rollback path.**
+
+Preflight must first confirm Hostland can resolve and reach ger1's actual
+SSH port and the installed SSH user/keys do not conflict with existing
+Ansible automation. Failure to deliver SSH heartbeat is never an OK.
+The receiver cannot be initialized until the first Kuma Push monitor has
+been configured securely and produced a private token on ger1.
 
 On fin1 only outbound HTTPS to the existing panel is needed; the read-only
 inventory already confirmed HTTP 200. Do not provide public web access to
@@ -67,7 +84,7 @@ localhost SSH tunnel or other operator-approved management path.
   A limit is not proof that the service fits; abort if it OOMs or impacts
   VPN workloads. Prefer a supported official slim image if verified.
 - Monitor only one Push or HTTPS target each, with conservative interval
-  and retry/grace (about 2-minute heartbeat; 5-8-minute outage threshold).
+  and retry/grace (5-minute sender interval; configure Push monitor timeout/retries to tolerate small scheduling delays, targeting approximately 8-10 minutes of silence before DOWN).
 - First test local UI via SSH tunnel, expected monitor state, authorized
   isolated TEST-only Telegram, intentional *monitor-only* missed heartbeat,
   restoration, and duplicate suppression. Do not stop production nodes,
@@ -81,5 +98,4 @@ Removal stops and removes only each dedicated Kuma Compose project and
 (optionally, after backup and permission) its dedicated local volume.
 Never remove or restart production remnanode/Xray/Remnawave containers.
 
-**NO-GO:** The Push ingress and DOWN-only notification behavior remain to
-be designed/verified. This document does not authorize deployment.
+**NO-GO:** A dedicated SSH account/key and private Kuma Push token still need provisioning and live proof; DOWN-only notifications still require a verified filter. This document does not authorize permanent deployment.
