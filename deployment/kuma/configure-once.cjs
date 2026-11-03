@@ -81,6 +81,11 @@ async function main() {
         if(!Number.isInteger(id)||id<1)throw new Error("invalid monitor id");
         const info=accepted("getMonitor", await call("getMonitor",id)).monitor;
         assert(info.name===name,"monitor identity differs");
+        if(target==="ger1" && process.env.KUMA_PUSH_TOKEN_OUT) {
+            assert(typeof info.pushToken==="string" && /^[a-zA-Z0-9_-]{8,128}$/.test(info.pushToken),
+                "missing or invalid Push token");
+            fs.writeFileSync(process.env.KUMA_PUSH_TOKEN_OUT, info.pushToken+"\\n",{mode:0o600});
+        }
         if(mode==="resume") {
             accepted("resumeMonitor", await call("resumeMonitor",id));
             console.log("PASS: "+target+" monitor activated");
