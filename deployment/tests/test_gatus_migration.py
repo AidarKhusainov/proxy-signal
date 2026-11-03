@@ -18,15 +18,20 @@ receiver = load("ssh-push-receiver.py")
 
 
 class GatusConfigTests(TestCase):
+    def test_staging_has_no_live_alerts(self):
+        for role in ("ger1", "fin1"):
+            result = render.render(role, "123456:ABCDEFGHIJKLMNOPQRST", "-123", "validpush123")
+            self.assertNotIn("    alerts:", result)
+
     def test_push_is_authenticated_and_down_only(self):
-        value = render.render("ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", "validpush123")
+        value = render.render("ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", "validpush123", enable_alerts=True)
         self.assertIn('token: "validpush123"', value)
         self.assertIn("interval: 10m", value)
         self.assertIn("send-on-resolved: false", value)
         self.assertNotIn("hostland-https", value)
 
     def test_pull_is_exact_https_down_only(self):
-        value = render.render("fin1", "123456:ABCDEFGHIJKLMNOPQRST", "-123")
+        value = render.render("fin1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", enable_alerts=True)
         self.assertIn("interval: 5m", value)
         self.assertIn("url: https://panel.censor-amoroso.com/", value)
         self.assertIn("'[STATUS] == 200'", value)
