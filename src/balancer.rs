@@ -287,7 +287,7 @@ mod tests {
             balancer_tag: "pool".into(),
             strategy: BalancerStrategy::LeastPing,
             candidates: vec!["node-a".into(), "node-b".into()],
-            candidate_ids: Vec::new(),
+            candidate_ids: Default::default(),
             fallback_tag: None,
         }
     }
