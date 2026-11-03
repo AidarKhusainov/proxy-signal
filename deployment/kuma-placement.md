@@ -1,4 +1,4 @@
-# Two-node Uptime Kuma proposal (review-only)
+# Two-node Uptime Kuma deployment (active, parallel)
 
 ## Evidence from live node inventory
 
@@ -16,7 +16,7 @@ https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41588618734
 All five hosts have Docker; TCP 3001 was not occupied. This is a single
 snapshot, not capacity or provider-independence proof. Each currently hosts
 production VPN services. Avoid swe1 (critical primary/CDN) and 1-GiB
-nyc1/msc1. Proposed trial placement: **ger1 Push observer** and
+nyc1/msc1. Accepted placement: **ger1 Push observer** and
 **fin1 HTTPS Pull observer**. fin1 has a deliberately pinned RemnaNode version;
 do not update/restart/remount any existing container to install Kuma.
 
@@ -36,9 +36,10 @@ do not update/restart/remount any existing container to install Kuma.
   cannot be relied upon for DOWN-only filtering (upstream #4744). The
   **separate, private** `down-only` webhook adapter in the Compose template
   filters `heartbeat.status == 0` and suppresses repeated DOWN events.
-  This implementation still needs a live end-to-end acceptance test against
-  the selected Kuma version before attaching the authorized Telegram chat.
-  Two distinct DOWN notices on a full Hostland outage are acceptable.
+  The adapter was accepted against the deployed Kuma with authorized
+  Telegram in a clearly labeled TEST transition, and its mode was then
+  explicitly switched to LIVE. Two distinct DOWN notices on a full
+  Hostland outage are acceptable.
 
 ## Push transport: restricted existing SSH, no WireGuard
 
@@ -102,4 +103,12 @@ Removal stops and removes only each dedicated Kuma Compose project and
 (optionally, after backup and permission) its dedicated local volume.
 Never remove or restart production remnanode/Xray/Remnawave containers.
 
-**NO-GO:** A dedicated SSH account/key and private Kuma Push token still need provisioning and live proof; the checked-in DOWN-only filter has offline tests but has not yet passed an end-to-end Telegram acceptance on the selected Kuma image. This document does not authorize permanent deployment.
+**GO for the authorized parallel installation (2026-11-03):** both isolated
+Kuma instances are running, ger1 receives authenticated restricted SSH Push,
+fin1 checks Hostland HTTPS independently, and both LIVE down-only adapters
+have been verified. See Actions runs
+[41599745470](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41599745470)
+and [41601014591](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41601014591).
+This does not establish complete VPN-path correctness, a real Hostland power
+failure test, or multi-day resource stability. Never disable the existing
+Remnawave monitor. PR merge remains a separate operator action.
