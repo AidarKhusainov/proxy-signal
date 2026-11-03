@@ -36,6 +36,9 @@ jobs:
       - name: Validate parallel Compose syntax
         run: |
           PROXYSIGNAL_IMAGE="ghcr.io/example/proxy-signal@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" docker compose -f deployment/compose.yaml config --quiet
+      - name: Validate localhost-only Kuma observer Compose
+        run: |
+          KUMA_IMAGE="docker.io/louislam/uptime-kuma@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" docker compose -f deployment/kuma/compose.yaml config --quiet
       # Release/acceptance check only; avoid a Docker rebuild on every PR push.
       - name: Docker Compose and Xray smoke
         if: github.event_name == 'workflow_dispatch'
