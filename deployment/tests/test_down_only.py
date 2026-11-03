@@ -15,6 +15,12 @@ class DownOnlyTests(unittest.TestCase):
     def body(self, status, name="Probe"):
         return {"heartbeat": {"status": status}, "monitor": {"name": name}}
 
+    def test_alert_mode_is_explicit_and_tests_are_labeled(self):
+        self.assertEqual(adapter.alert_prefix("test"), "[TEST ProxySignal]")
+        self.assertEqual(adapter.alert_prefix("live"), "[ProxySignal]")
+        with self.assertRaises(ValueError):
+            adapter.alert_prefix("unknown")
+
     def test_only_new_down_notifies_and_up_rearms_without_message(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(adapter, "STATE", pathlib.Path(directory) / "state.json"), \
