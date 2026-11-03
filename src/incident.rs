@@ -575,9 +575,15 @@ mod tests {
     #[test]
     fn rejects_invalid_opaque_candidate_keys_during_restore() {
         assert!(legacy_candidate_key("balancer/source/pool/candidate/id~"));
-        assert!(legacy_candidate_key("balancer/source/pool/candidate/id~invalid/tag"));
-        assert!(legacy_candidate_key("balancer/source/pool/candidate/id~invalid.tag"));
-        assert!(!legacy_candidate_key("balancer/source/pool/candidate/id~a_B-2"));
+        assert!(legacy_candidate_key(
+            "balancer/source/pool/candidate/id~invalid/tag"
+        ));
+        assert!(legacy_candidate_key(
+            "balancer/source/pool/candidate/id~invalid.tag"
+        ));
+        assert!(!legacy_candidate_key(
+            "balancer/source/pool/candidate/id~a_B-2"
+        ));
         assert!(!legacy_candidate_key("balancer/source/pool/candidate/0"));
     }
 
