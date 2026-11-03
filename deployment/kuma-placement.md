@@ -1,4 +1,6 @@
-# Two-node Uptime Kuma deployment (active, parallel)
+# Two-node Uptime Kuma deployment (retired; rollback reference)
+
+**Superseded on 2026-11-03:** Gatus now provides the two observer checks. Old Kuma containers were removed but SQLite volumes and consistent archives remain for rollback. See [Gatus migration runbook](gatus/README.md) and [final production audit](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41614146392). The text below documents the former approved state, not live deployment.
 
 ## Evidence from live node inventory
 
