@@ -10,6 +10,8 @@ on:
       - 'config.example.yaml'
       - 'scripts/smoke-docker.sh'
       - '.github/workflows/ci.yml'
+      - 'deployment/**'
+      - '.github/workflows/publish-image.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,6 +31,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets
+      - name: Offline external watchdog regression tests
+        run: python3 -m unittest discover -s deployment/tests -p 'test_*.py' -v
+      - name: Validate parallel Compose syntax
+        run: |
+          PROXYSIGNAL_IMAGE="ghcr.io/example/proxy-signal@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" docker compose -f deployment/compose.yaml config --quiet
       # Release/acceptance check only; avoid a Docker rebuild on every PR push.
       - name: Docker Compose and Xray smoke
         if: github.event_name == 'workflow_dispatch'
