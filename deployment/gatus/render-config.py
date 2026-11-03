@@ -21,7 +21,7 @@ def read_secret(path, pattern):
 
 
 def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False):
-    quote = json.dumps  # JSON strings are valid YAML scalars.
+    quote = json.dumps  # JSON quoted strings are valid YAML scalars.
     header = f"""storage:
   type: sqlite
   path: /data/gatus.db
@@ -38,13 +38,21 @@ alerting:
     if role == "ger1":
         if not push_token:
             raise ValueError("missing ger1 push token")
-        base = f"""external-endpoints:
+        external = f"""external-endpoints:
   - name: proxysignal-heartbeat
     group: observer
     token: {quote(push_token)}
     heartbeat:
       interval: 10m
-endpoints:
+"""
+        external_alert = """    alerts:
+      - type: telegram
+        failure-threshold: 1
+        success-threshold: 1
+        send-on-resolved: false
+        description: ProxySignal не обновляет результаты проверок (ger1)
+"""
+        ordinary = """endpoints:
   - name: hostland-https-secondary
     group: observer
     url: https://panel.censor-amoroso.com/
@@ -55,15 +63,9 @@ endpoints:
     conditions:
       - '[STATUS] == 200'
 """
-        alerts = """    alerts:
-      - type: telegram
-        failure-threshold: 1
-        success-threshold: 1
-        send-on-resolved: false
-        description: ProxySignal не обновляет результаты проверок (ger1)
-"""
-    elif role == "fin1":
-        base = """endpoints:
+        return header + external + (external_alert if enable_alerts else "") + ordinary
+    if role == "fin1":
+        ordinary = """endpoints:
   - name: hostland-https
     group: observer
     url: https://panel.censor-amoroso.com/
@@ -74,16 +76,15 @@ endpoints:
     conditions:
       - '[STATUS] == 200'
 """
-        alerts = """    alerts:
+        ordinary_alert = """    alerts:
       - type: telegram
         failure-threshold: 2
         success-threshold: 1
         send-on-resolved: false
         description: Hostland HTTPS недоступен (fin1)
 """
-    else:
-        raise ValueError("unsupported role")
-    return header + base + (alerts if enable_alerts else "")
+        return header + ordinary + (ordinary_alert if enable_alerts else "")
+    raise ValueError("unsupported role")
 
 
 def main():
