@@ -10,7 +10,7 @@ const { io } = require("socket.io-client");
 const mode = process.env.KUMA_MODE;
 const target = process.env.KUMA_TARGET;
 const port = Number(process.env.KUMA_LOCAL_PORT);
-if (!["configure", "resume", "inspect", "verify", "pause"].includes(mode) ||
+if (!["configure", "resume", "inspect", "verify", "verify-two", "pause"].includes(mode) ||
     !["ger1", "fin1"].includes(target) ||
     !Number.isInteger(port) || port < 1024 || port > 65535) {
     throw new Error("invalid target/mode/loopback port");
@@ -89,11 +89,13 @@ async function main() {
         if(mode==="pause") {
             accepted("pauseMonitor", await call("pauseMonitor",id));
             console.log("PASS: "+target+" monitor paused");
-        } else if(mode==="verify") {
+        } else if(mode==="verify" || mode==="verify-two") {
             const beats=accepted("getMonitorBeats",await call("getMonitorBeats",id,1));
-            if(!Array.isArray(beats.data) || !beats.data.some(b=>b.status===1))
-                throw new Error("no confirmed UP heartbeat");
-            console.log("PASS: "+target+" has confirmed UP heartbeat");
+            const up=Array.isArray(beats.data) ? beats.data.filter(b=>b.status===1) : [];
+            if(up.length < (mode==="verify-two" ? 2 : 1) ||
+               new Set(up.map(b=>b.time)).size < (mode==="verify-two" ? 2 : 1))
+                throw new Error("insufficient independent UP heartbeats");
+            console.log("PASS: "+target+" has confirmed "+(mode==="verify-two"?"repeated":"first")+" UP heartbeat");
         } else if(mode==="resume") {
             accepted("resumeMonitor", await call("resumeMonitor",id));
             console.log("PASS: "+target+" monitor activated");
