@@ -71,6 +71,12 @@ pub fn select(source: &Source, document: Value) -> Result<Vec<SelectedProfile>> 
         .collect())
 }
 
+/// A complete selection contains one valid document for each required profile,
+/// without unexpected subscription entries.
+pub fn selection_complete(selected: &[SelectedProfile], actual_entries: usize) -> bool {
+    selected.len() == actual_entries && selected.iter().all(|profile| profile.document.is_some())
+}
+
 pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
     let max_bytes = if source.profiles().is_empty() {
         MAX_PROFILE
