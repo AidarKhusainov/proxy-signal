@@ -560,6 +560,40 @@ mod tests {
     }
 
     #[test]
+    fn opaque_candidate_incident_survives_restart_without_restoring_raw_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let stable = "balancer/source/pool/candidate/id~sweden";
+        let raw_tag = "balancer/source/pool/candidate/private-outbound";
+        let mut state = State::default();
+        for _ in 0..2 {
+            state.observe(
+                stable,
+                Observation::new(Status::Failed, "candidate_https_failed"),
+                true,
+            );
+            state.observe(
+                raw_tag,
+                Observation::new(Status::Failed, "candidate_https_failed"),
+                true,
+            );
+        }
+        state.persist(&path).unwrap();
+        let mut restored = State::load(&path).unwrap();
+        assert_eq!(restored.records.len(), 1);
+        assert!(restored.records.contains_key(stable));
+        assert_eq!(restored.pending.len(), 1);
+        assert_eq!(restored.pending[0].key, stable);
+        restored.observe(
+            stable,
+            Observation::new(Status::Ok, "candidate_https_verified"),
+            true,
+        );
+        assert_eq!(restored.pending.len(), 2);
+        assert_eq!(restored.pending[1].status, Status::Ok);
+    }
+
+    #[test]
     fn persists_pending_and_incident_between_restarts() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("state.json");
