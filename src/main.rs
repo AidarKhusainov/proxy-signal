@@ -590,7 +590,7 @@ fn candidate_key(balancer_key: &str, case: &BalancerScenario, index: usize) -> S
         .get(index)
         .and_then(|tag| case.candidate_ids.get(tag))
     {
-        Some(id) => format!("{balancer_key}/candidate/id-{id}"),
+        Some(id) => format!("{balancer_key}/candidate/id~{id}"),
         None => format!("{balancer_key}/candidate/{index}"),
     }
 }
@@ -815,7 +815,7 @@ mod tests {
         let reordered = &after.balancers()[0];
         let key = candidate_key("balancer/lab/pool", first, 0);
         assert_eq!(key, candidate_key("balancer/lab/pool", reordered, 1));
-        assert_eq!(key, "balancer/lab/pool/candidate/id-sweden");
+        assert_eq!(key, "balancer/lab/pool/candidate/id~sweden");
         assert!(!key.contains("private-sweden-outbound"));
         assert_ne!(key, candidate_key("balancer/lab/pool", first, 1));
     }
