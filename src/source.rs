@@ -213,6 +213,28 @@ mod tests {
     }
 
     #[test]
+    fn subscription_contract_requires_every_expected_profile_and_no_unselected_extras() {
+        let source: Source = serde_yaml::from_str(
+            "kind: https\nid: happ\nurl: https://example.org/sub\nprofiles:\n  - { id: first, remarks: A }\n  - { id: second, remarks: B }\n",
+        )
+        .unwrap();
+        let a = serde_json::json!({"remarks":"A","outbounds":[{"protocol":"vless"}]});
+        let b = serde_json::json!({"remarks":"B","outbounds":[{"protocol":"vless"}]});
+        let complete = select(&source, serde_json::json!([b.clone(), a.clone()])).unwrap();
+        assert!(selection_complete(&complete, 2));
+        let missing = select(&source, serde_json::json!([a.clone()])).unwrap();
+        assert!(!selection_complete(&missing, 1));
+        let duplicate = select(&source, serde_json::json!([a.clone(), a.clone()])).unwrap();
+        assert!(!selection_complete(&duplicate, 2));
+        let extra = select(
+            &source,
+            serde_json::json!([a, b, {"remarks":"Unexpected","outbounds":[{"protocol":"vless"}]}]),
+        )
+        .unwrap();
+        assert!(!selection_complete(&extra, 3));
+    }
+
+    #[test]
     fn legacy_single_object_remains_supported() {
         let source: Source =
             serde_yaml::from_str("kind: file\nid: original\npath: /tmp/profile.json\n").unwrap();
