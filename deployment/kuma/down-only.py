@@ -69,7 +69,13 @@ def notify(label):
 
 
 def process_event(body):
-    if not isinstance(body, dict) or not isinstance(body.get("heartbeat"), dict):
+    if not isinstance(body, dict):
+        raise ValueError("invalid payload")
+    # Kuma's webhook Setup Notification test is not a monitor state transition.
+    # Acknowledge it silently without changing persistence or delivering Telegram.
+    if body.get("heartbeat") is None and body.get("monitor") is None and isinstance(body.get("msg"), str):
+        return
+    if not isinstance(body.get("heartbeat"), dict):
         raise ValueError("invalid payload")
     monitor = body.get("monitor")
     if not isinstance(monitor, dict) or monitor.get("name") != os.environ["MONITOR_NAME"]:
