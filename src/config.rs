@@ -41,10 +41,10 @@ pub struct BalancerScenario {
     pub balancer_tag: String,
     pub strategy: BalancerStrategy,
     pub candidates: Vec<String>,
-    /// Opaque per-candidate identities; stable when candidates are reordered.
+    /// Mapping from Xray outbound tag to opaque, stable candidate identity.
     /// Legacy configurations without IDs retain index-based observation keys.
     #[serde(default)]
-    pub candidate_ids: Vec<String>,
+    pub candidate_ids: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub fallback_tag: Option<String>,
 }
@@ -452,8 +452,9 @@ impl Config {
                 }
                 if !case.candidate_ids.is_empty()
                     && (case.candidate_ids.len() != case.candidates.len()
-                        || case.candidate_ids.iter().any(|id| !valid_id(id))
-                        || case.candidate_ids.iter().collect::<HashSet<_>>().len()
+                        || case.candidate_ids.keys().any(|tag| !case.candidates.contains(tag))
+                        || case.candidate_ids.values().any(|id| !valid_id(id))
+                        || case.candidate_ids.values().collect::<HashSet<_>>().len()
                             != case.candidate_ids.len())
                 {
                     bail!("invalid balancer candidate ids");
@@ -732,20 +733,21 @@ mod tests {
 
     #[test]
     fn candidate_ids_must_match_candidates_and_remain_unique() {
-        let yaml = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 2\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.org/ip }\nsources:\n  - kind: file\n    id: lab\n    path: /tmp/profile.json\n    balancers:\n      - id: pool\n        url: https://probe.example.net/\n        balancer_tag: pool\n        strategy: leastPing\n        candidates: [node-a, node-b]\n        candidate_ids: [sweden, finland]\n";
+        let yaml = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 2\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.org/ip }\nsources:\n  - kind: file\n    id: lab\n    path: /tmp/profile.json\n    balancers:\n      - id: pool\n        url: https://probe.example.net/\n        balancer_tag: pool\n        strategy: leastPing\n        candidates: [node-a, node-b]\n        candidate_ids: {node-a: sweden, node-b: finland}\n";
         let valid: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(valid.validate().is_ok());
         let legacy: Config =
-            serde_yaml::from_str(&yaml.replace("        candidate_ids: [sweden, finland]\n", ""))
+            serde_yaml::from_str(&yaml.replace("        candidate_ids: {node-a: sweden, node-b: finland}\n", ""))
                 .unwrap();
         assert!(legacy.validate().is_ok());
         for candidate_ids in [
-            "        candidate_ids: [sweden]\n",
-            "        candidate_ids: [sweden, sweden]\n",
-            "        candidate_ids: [sweden, invalid/id]\n",
+            "        candidate_ids: {node-a: sweden}\n",
+            "        candidate_ids: {node-a: sweden, node-b: sweden}\n",
+            "        candidate_ids: {node-a: sweden, node-x: finland}\n",
+            "        candidate_ids: {node-a: sweden, node-b: invalid/id}\n",
         ] {
             let invalid: Config = serde_yaml::from_str(
-                &yaml.replace("        candidate_ids: [sweden, finland]\n", candidate_ids),
+                &yaml.replace("        candidate_ids: {node-a: sweden, node-b: finland}\n", candidate_ids),
             )
             .unwrap();
             assert!(invalid.validate().is_err());
