@@ -1,0 +1,27 @@
+# Isolated observer, staged alongside existing Kuma (ger1 or fin1).
+name: proxysignal-gatus-observer
+services:
+  gatus:
+    image: ${GATUS_IMAGE:?Set verified immutable Gatus OCI image @sha256}
+    pull_policy: never
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.25
+    ports:
+      - "127.0.0.1:3002:8080"
+    environment:
+      GATUS_CONFIG_PATH: /config/config.yaml
+    volumes:
+      - ./private/config.yaml:/config/config.yaml:ro
+      - ./private/data:/data
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"

@@ -1,0 +1,63 @@
+# Staged Uptime Kuma → Gatus migration (ger1 Push, fin1 HTTPS Pull)
+
+**Status: PRODUCTION MIGRATION COMPLETED, 2026-11-03.** Both old Kuma containers and DOWN-only adapters were stopped and removed, with Docker volumes left intact. Gatus is actively monitoring on both nodes. No public ports were introduced; RemnaNode, Hostland ProxySignal and the original Remnawave monitoring were preserved.
+
+Verified evidence:
+
+- [Read-only production preflight](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41610412123)
+- [Parallel Gatus installation, alerts disarmed](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41611663733)
+- [Functional authenticated heartbeat and HTTPS acceptance](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41611916261)
+- [Isolated TEST-only Telegram DOWN delivery on both nodes](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41612160611)
+- [ger1 restricted SSH / Hostland watchdog cutover](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41612738150)
+- [fin1 HTTPS alert cutover](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41612967295)
+- [Fresh successful Gatus observations and systemd timer](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41613426253)
+- [Final read-only post-retirement audit, both SQLite archives SHA256-verified](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41614146392)
+- [Verified cleanup of abandoned duplicate backup and temporary staging archive](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41614532281)
+
+The actual OCI Gatus image is pinned in each node's private `.env` as `ghcr.io/twin/gatus@sha256:085ed63da963728965d00a3c78aa6167e3bf135218485b893201758e079e8415`. No container image was built on VPN hosts. The 128 MiB memory limit remains a cap, not a guarantee of maximum measured RSS; final observed container cgroup usage was **7.328 MiB on ger1** and **7.008 MiB on fin1**. Multi-day leak stability is not yet established.
+
+Operational state:
+
+- `ger1`: the original five-minute Hostland timer and key remain; the dedicated `kuma-push` account's single restricted authorized key now forces `/usr/local/bin/proxysignal-gatus-push`. Original authorized_keys is backed up as root-only `/etc/proxysignal-gatus-push/kuma-authorized-keys.backup`. The new token exists only on ger1. The Gatus external endpoint monitors missing heartbeat; its secondary Hostland HTTPS check is informational, not an additional Telegram alert.
+- `fin1`: Gatus HTTPS Pull checks the existing Panel URL on a five-minute schedule and alerts only on confirmed DOWN. Gatus Telegram alerts use the upstream message template, which is not fully Russian.
+- Both: local-only Gatus port `127.0.0.1:3002`, separate SQLite data, normal production RemnaNode unchanged. Old Kuma was paused before retirement, so it must be explicitly resumed if rolled back. No `docker compose down -v` was used.
+- The old Kuma Compose files, images, dedicated SSH receiver, tokens and Docker volumes were deliberately retained for rollback. Consistent stopped-state Kuma SQLite archives are held under `/var/backups/proxysignal-kuma-to-gatus-20261103-retry/` on ger1 and `/var/backups/proxysignal-kuma-to-gatus-20261103/` on fin1, root-only. The redundant first-attempt ger1 archive and temporary staging TAR were removed only after verifying the replacement backup checksum and active services.
+- This does not establish end-to-end VPN availability from Russian ISP networks. Such tests remain ProxySignal's responsibility on Hostland.
+
+**Rollback**: disable live Gatus Telegram alerts with `render-config.py` without `--enable-alerts` and restart only Gatus; on ger1 restore the backed-up single forced-command authorized_keys preserving owner/mode, start the old Kuma Compose project from its pinned image and unchanged Docker volume, then use the authenticated, SSH-tunnel-protected Kuma Socket.IO procedure to resume its Push monitor. On fin1 restore the old Kuma Compose project and resume its HTTPS monitor. Verify two fresh UP observations, pinned Hostland heartbeat, Telegram alerts, and unchanged VPN containers. Never restore a live SQLite database by copying over an open file.
+
+The sections below are the safe migration procedure retained for upgrades or rollback context; they describe the staged sequence originally followed, not the current live state.
+
+## Replacement scope
+
+- ger1: Gatus external endpoint `observer_proxysignal-heartbeat` with bearer authentication and a 10-minute missed-heartbeat deadline; current Hostland watchdog still sends every five minutes, but initially **to Kuma**.
+- fin1: Gatus HTTP GET of the existing Panel HTTPS URL, every five minutes, HTTP 200, two consecutive failed checks.
+- Both: built-in Telegram DOWN alert (no recovery notification), SQLite, dedicated Compose project, unprivileged, read-only, no Docker socket or privileged mode. Bind only **127.0.0.1:3002**. Existing Kuma remains at 127.0.0.1:3001 during staging. No new public listener.
+- This retains the present **monitor heartbeat vs Panel reachability** split. It does **not** add actual end-to-end VPN checks, which remain owned by Hostland ProxySignal.
+
+## Safety prerequisites
+
+1. Use the existing authorized `remnawave-infra` runner SSH mechanism with pinned host keys. Inspect both production nodes and Hostland **live**: CPU, available RAM, swap, free disk, current Docker containers and immutable IDs/start times, listening ports, networks, Panel HTTPS, Xray health, and the existing Kuma monitoring states. Abort on unexpected drift.
+2. Resolve the official Gatus version and platform-correct OCI **@sha256 digest** on the runner. Pull the image on both nodes without building on a production VPN host. Inspect license/image provenance. The 128 MiB memory limit here is an initial admission limit, **not** a measured requirement; increase only after evidence and without starving RemnaNode. Verify image supports running as UID 65532 with SQLite under `/data`.
+3. Create a dedicated `/opt/proxysignal-gatus-observer` directory on each node with `compose.yaml`, a private directory mode 0700 and `private/data` owned by UID 65532. Store an immutable image reference in a protected local `.env` as `GATUS_IMAGE=ghcr.io/twin/gatus@sha256:...`. Never commit secrets or paste tokens to logs.
+4. Reuse the existing authorized Telegram bot/chat via **file-backed** `private/telegram-token` and `private/telegram-chat-id`. Do not pass tokens through Compose environment or CLI. For ger1, generate a new random URL-safe Gatus bearer token into a separate root-owned `/etc/proxysignal-gatus-push/token` (readable by the dedicated forced-command account; **do not reuse Kuma's token**). Generate `private/config.yaml` with `python3 render-config.py --role ger1 --private-dir private --push-token-file /etc/proxysignal-gatus-push/token` (or `--role fin1`). Run as root; private config becomes root:65532 0440. Do not log config contents.
+5. Run `docker compose config --quiet` then start **only the new Gatus Compose project**. Inspect logs with secret redaction, the actual container image ID, database creation, local-only bound port and the existing production container start times. Verify HTTPS Pull from fin1 and authenticated Push locally on ger1 without changing the Kuma receiver.
+
+## Push cutover (only after both Gatus instances pass parallel checks)
+
+The current Hostland systemd watchdog runs `deployment/watchdog.py` and uses restricted SSH `kuma-push@ger1` with `SSH_ORIGINAL_COMMAND=heartbeat`. **Do not change Hostland's timer or watchdog.** The receiver on ger1 is what switches the destination:
+
+1. Stage `ssh-push-receiver.py` at a **new**, root-owned, executable path `/usr/local/bin/proxysignal-gatus-push`, with the bearer token stored only on ger1. The receiver refuses all other SSH commands and only POSTs to Gatus over loopback. Keep original `/usr/local/bin/proxysignal-kuma-push` for rollback.
+2. With a *separate, temporary test-only restricted SSH authorized key* (or an approved equally isolated local invocation), verify a single Gatus heartbeat arrives, including a denied arbitrary command. Do not alter production Ansible authorized_keys.
+3. Back up the dedicated `kuma-push` account's authorized_keys. After positive Gatus acceptance, **pause the old Kuma Push monitor first** to avoid sending a false LIVE DOWN. Replace only the forced-command path in that dedicated key's restrictions, retaining `restrict`, pinned host key, `from=` restriction if present, and no interactive access. Do not modify the underlying key or the Hostland timer.
+4. Confirm two separate scheduled 5-minute acknowledgements in Gatus, freshness of Hostland source/happ + eight profiles, and unchanged Panel/VPN listeners. If any acknowledgment fails, restore the old authorized_keys and resume Kuma Push.
+
+## Notifications and retirement gate
+
+- Gatus Telegram sends **DOWN only** (`send-on-resolved: false`), not UP. Confirm one labeled TEST DOWN per node and that recovery/repeated failures do not send additional messages. Run tests using separate disposable *synthetic* endpoints or a test bot/chat first: never deliberately impair live VPN, Panel or main ProxySignal. The built-in Telegram provider is different from the former private Kuma webhook adapter. Confirm actual Telegram acknowledgement.
+- Verify Gatus observes actual **consecutive** 5-minute HTTPS checks, real Push records, missed Push detection, and persists SQLite state across restart; compare Telegram and observation history with the still-running Kuma.
+- Measure **whole-container cgroup memory (idle and peak)** and CPU, disk, Docker/PID usage over multiple cycles; ensure both nodes have adequate available memory. Retire Kuma only if Gatus delivers equivalent coverage, thresholds and alerts, without resource regressions.
+- Before retiring, back up both Kuma SQLite volumes consistently; do not delete backups or volumes. Stop/remove **only** the two isolated Kuma Compose projects and old adapters, and remove retired dedicated scripts/secrets only in an audited follow-up. No `docker compose down -v`. Do not modify RemnaNode or production networks.
+- Rollback: restore original dedicated forced-command authorized_keys, resume Kuma Push, restart only isolated Kuma observers from their pinned prior image and persisted volumes, stop only Gatus, and verify the old 5-minute Push and HTTPS Pull are both UP. Preserve Gatus artifacts for diagnosis, without leaving two live Telegram alert pipelines indefinitely.
+
+**Acceptance cannot be claimed from source changes or unit tests.** A live runner deployment and postflight with evidence is mandatory before replacing Kuma.
