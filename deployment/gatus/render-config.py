@@ -44,6 +44,16 @@ alerting:
     token: {quote(push_token)}
     heartbeat:
       interval: 10m
+endpoints:
+  - name: hostland-https-secondary
+    group: observer
+    url: https://panel.censor-amoroso.com/
+    interval: 5m
+    client:
+      timeout: 15s
+      ignore-redirect: true
+    conditions:
+      - '[STATUS] == 200'
 """
         alerts = """    alerts:
       - type: telegram
