@@ -21,48 +21,59 @@ def read_secret(path, pattern):
 
 
 def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False):
-    quote = json.dumps  # JSON quoted strings are valid YAML scalars.
-    config = (
-        "storage:\n  type: sqlite\n  path: /data/gatus.db\n"
-        "  maximum-number-of-results: 100\n  maximum-number-of-events: 50\n"
-        "web:\n  address: 0.0.0.0\n  port: 8080\n"
-        "alerting:\n  telegram:\n"
-        f"    token: {quote(telegram_token)}\n"
-        f"    id: {quote(chat_id)}\n"
-    )
+    quote = json.dumps  # JSON strings are valid YAML scalars.
+    header = f"""storage:
+  type: sqlite
+  path: /data/gatus.db
+  maximum-number-of-results: 100
+  maximum-number-of-events: 50
+web:
+  address: 0.0.0.0
+  port: 8080
+alerting:
+  telegram:
+    token: {quote(telegram_token)}
+    id: {quote(chat_id)}
+"""
     if role == "ger1":
         if not push_token:
             raise ValueError("missing ger1 push token")
-        return config + (
-            "external-endpoints:\n"
-            "  - name: proxysignal-heartbeat\n"
-            "    group: observer\n"
-            f"    token: {quote(push_token)}\n"
-            "    heartbeat:\n      interval: 10m\n"
-            "    alerts:\n"
-            "      - type: telegram\n"
-            "        failure-threshold: 1\n"
-            "        success-threshold: 1\n"
-            "        send-on-resolved: false\n"
-            "        description: ProxySignal не обновляет результаты проверок (ger1)\n"
-        )
-    if role == "fin1":
-        return config + (
-            "endpoints:\n"
-            "  - name: hostland-https\n"
-            "    group: observer\n"
-            "    url: https://panel.censor-amoroso.com/\n"
-            "    interval: 5m\n"
-            "    client:\n      timeout: 15s\n      ignore-redirect: true\n"
-            "    conditions:\n      - '[STATUS] == 200'\n"
-            "    alerts:\n"
-            "      - type: telegram\n"
-            "        failure-threshold: 2\n"
-            "        success-threshold: 1\n"
-            "        send-on-resolved: false\n"
-            "        description: Hostland HTTPS недоступен (fin1)\n"
-        )
-    raise ValueError("unsupported role")
+        base = f"""external-endpoints:
+  - name: proxysignal-heartbeat
+    group: observer
+    token: {quote(push_token)}
+    heartbeat:
+      interval: 10m
+"""
+        alerts = """    alerts:
+      - type: telegram
+        failure-threshold: 1
+        success-threshold: 1
+        send-on-resolved: false
+        description: ProxySignal не обновляет результаты проверок (ger1)
+"""
+    elif role == "fin1":
+        base = """endpoints:
+  - name: hostland-https
+    group: observer
+    url: https://panel.censor-amoroso.com/
+    interval: 5m
+    client:
+      timeout: 15s
+      ignore-redirect: true
+    conditions:
+      - '[STATUS] == 200'
+"""
+        alerts = """    alerts:
+      - type: telegram
+        failure-threshold: 2
+        success-threshold: 1
+        send-on-resolved: false
+        description: Hostland HTTPS недоступен (fin1)
+"""
+    else:
+        raise ValueError("unsupported role")
+    return header + base + (alerts if enable_alerts else "")
 
 
 def main():
