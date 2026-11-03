@@ -54,6 +54,12 @@ Probes that intentionally modify routes to simulate a failed candidate are **sim
 ## Data and identity
 
 - Stable IDs for source/profile/scenario. Do not use profile display names as unique identifiers.
+- To keep individual balancer candidate incidents stable when candidates change order, configure optional
+  `candidate_ids` as a complete mapping of Xray outbound tags to opaque operator-defined IDs.
+  Validate unique IDs and exact coverage of candidates. Legacy configurations without this
+  mapping retain positional candidate keys for compatibility; configure IDs before relying
+  on stable per-candidate incident history. Changes to key format do not prove recovery.
+  Observation keys must never contain outbound tags.
 - Observations include location, version/hash, timestamp, duration, kind, status, bounded failure code and available evidence.
 - Freshness is independent from availability. UNKNOWN/UNSUPPORTED/stale must never silently become OK.
 - Incident correlation requires comparable consecutive results for the same scenario; different failures do not merge into a false consecutive outage.
