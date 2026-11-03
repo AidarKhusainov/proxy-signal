@@ -52,9 +52,9 @@ See `kuma-placement.md` for measured capacity and fail-open/closed details.
    listeners unchanged. Do not touch existing Ansible authorized_keys.
 5. Using an *authorized SSH tunnel*, initialize each Kuma admin account.
    Configure only one monitor: ger1 Push; fin1 HTTPS Pull.
-   Set BOTH monitor heartbeat/check interval to **5 minutes**. On ger1
-   use Push retry settings sufficient to tolerate small timer jitter,
-   e.g. 360-second expected deadline with 2 retries of 60 seconds each.
+   Send Push from Hostland every **5 minutes** and configure fin1's HTTPS
+   Pull interval to **5 minutes**. On ger1, allow small Push timer jitter:
+   use a 360-second maximum interval with 2 retries of 60 seconds each.
    Disable built-in recurring DOWN notifications; disable direct Telegram
    notification providers and use the local DOWN-only webhook instead.
    It should be configured to POST JSON to
