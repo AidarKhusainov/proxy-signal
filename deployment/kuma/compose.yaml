@@ -6,6 +6,8 @@ services:
     pull_policy: never
     restart: unless-stopped
     init: true
+    environment:
+      UPTIME_KUMA_DB_TYPE: sqlite
     cpus: 0.5
     mem_limit: 384m
     memswap_limit: 384m
