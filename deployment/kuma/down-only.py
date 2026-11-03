@@ -47,15 +47,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def alert_prefix(mode):
+    if mode == "test":
+        return "[TEST ProxySignal]"
+    if mode == "live":
+        return "[ProxySignal]"
+    raise ValueError("invalid alert mode")
+
+
 def notify(label):
     token = Path("/run/secrets/telegram-token").read_text(encoding="ascii").strip()
     chat_id = Path("/run/secrets/telegram-chat-id").read_text(encoding="ascii").strip()
     if not token or not chat_id or len(token) > 256 or len(chat_id) > 64:
         raise ValueError("invalid Telegram secrets")
     mode = os.environ.get("PROXYSIGNAL_ALERT_MODE", "test")
-    if mode not in ("test", "live"):
-        raise ValueError("invalid alert mode")
-    prefix = "[TEST ProxySignal]" if mode == "test" else "[ProxySignal]"
+    prefix = alert_prefix(mode)
     data = json.dumps({
         "chat_id": chat_id,
         "text": prefix + " DOWN — " + label,
