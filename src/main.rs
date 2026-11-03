@@ -795,6 +795,25 @@ mod tests {
         assert_eq!(state.pending[0].status, Status::Failed);
     }
     #[test]
+    fn explicit_candidate_ids_keep_incidents_stable_after_reordering() {
+        let before: Source = serde_yaml::from_str(
+            "kind: file\nid: lab\npath: /tmp/profile.json\nbalancers:\n  - id: pool\n    url: https://example.org/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [private-sweden-outbound, private-finland-outbound]\n    candidate_ids: [sweden, finland]\n",
+        )
+        .unwrap();
+        let after: Source = serde_yaml::from_str(
+            "kind: file\nid: lab\npath: /tmp/profile.json\nbalancers:\n  - id: pool\n    url: https://example.org/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [private-finland-outbound, private-sweden-outbound]\n    candidate_ids: [finland, sweden]\n",
+        )
+        .unwrap();
+        let first = &before.balancers()[0];
+        let reordered = &after.balancers()[0];
+        let key = candidate_key("balancer/lab/pool", first, 0);
+        assert_eq!(key, candidate_key("balancer/lab/pool", reordered, 1));
+        assert_eq!(key, "balancer/lab/pool/candidate/id-sweden");
+        assert!(!key.contains("private-sweden-outbound"));
+        assert_ne!(key, candidate_key("balancer/lab/pool", first, 1));
+    }
+
+    #[test]
     fn candidate_observation_keys_never_embed_sensitive_outbound_tags() {
         let key = candidate_key("balancer/source/latency", 1);
         assert_eq!(key, "balancer/source/latency/candidate/1");
