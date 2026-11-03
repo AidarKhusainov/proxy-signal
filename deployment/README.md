@@ -81,9 +81,12 @@ See `kuma-placement.md` for measured capacity and fail-open/closed details.
 
 ## Restricted SSH from Hostland to ger1
 
-1. Generate a NEW dedicated Ed25519 key on Hostland in
-   /etc/proxy-signal-parallel/ssh/id_ed25519, mode 0600, never in Git
-   or GitHub Actions logs. Copy the public half only to ger1.
+1. Generate a NEW dedicated Ed25519 key in a protected deployment
+   environment, install its private half at
+   /etc/proxy-signal-parallel/ssh/id_ed25519 on Hostland (root 0600),
+   and install only the public half on ger1. The initial authorized
+   deployment generated the key on an ephemeral GitHub runner, transferred
+   it over pinned SSH and cleaned runner files. Never commit or log it.
 2. Create a dedicated unprivileged ger1 account `kuma-push`, leaving the
    production Ansible account untouched. Install
    `deployment/kuma/ssh-push-receiver.py` at
@@ -126,6 +129,28 @@ those VPN alerts independently.
   webhooks. Its Telegram delivery is **at-least-once** around a
   send-before-state-write crash; validate it instead of claiming
   exactly-once semantics.
+
+## Runtime artifact provenance and drift
+
+The 2026-11-03 Hostland deployment runs a locally named
+`proxy-signal:parallel-<run-id>-<attempt>` image built on a GitHub
+runner. Its compressed Docker image archive was SHA256-verified before
+`docker load` on Hostland. **It is not an OCI manifest digest reference**;
+do not interpret the Compose `PROXYSIGNAL_IMAGE` placeholder as proof that
+the running image was published to GHCR. The run-specific image tag is
+immutable by deployment convention, but Docker tags are intrinsically mutable.
+Before any replacement, inspect the running container's image ID and
+`/opt/proxy-signal-parallel/.env`; verify a reviewed build and image digest
+or SHA256-verified artifact. Never run `docker compose pull` for the
+runner-local image or substitute a floating tag. The source used for the
+initial deployment is the reviewed commit
+`8a222032766b5c8ed6715f40c725065a34127c0f`.
+
+Both Kuma observers instead use externally retrieved pinned OCI image
+digests. Their notification adapter code has since been updated in place
+with tested `LIVE` DOWN-only behavior. A new PR commit does not implicitly
+upgrade any running image or remote file; reconcile explicitly with a
+fresh read-only preflight before changing production.
 
 ## Test / update / rollback / remove
 
