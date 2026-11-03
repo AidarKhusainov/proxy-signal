@@ -30,6 +30,15 @@ class DownOnlyTests(unittest.TestCase):
             adapter.process_event(self.body(0))  # next real outage
             self.assertEqual(notify.call_count, 2)
 
+    def test_notification_setup_probe_is_silent_and_does_not_touch_state(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(adapter, "STATE", pathlib.Path(directory) / "state.json"), \
+                patch.dict(adapter.os.environ, {"MONITOR_NAME": "Probe"}), \
+                patch.object(adapter, "notify") as notify:
+            adapter.process_event({"msg": "Testing notification"})
+            notify.assert_not_called()
+            self.assertFalse(adapter.STATE.exists())
+
     def test_rejects_other_monitors_and_non_status_events(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(adapter, "STATE", pathlib.Path(directory) / "state.json"), \
