@@ -1,8 +1,9 @@
-# ProxySignal parallel deployment: manual, not yet live
+# ProxySignal parallel deployment: operating in parallel on Hostland
 
-This deployment is **not authorized to replace Remnawave monitoring**.
-Never deploy a permanent ProxySignal, merge a PR, alter firewall/Xray,
-Panel or subscriptions without separate approval.
+The operator authorized the isolated permanent parallel instance on 2026-11-03.
+It is running **alongside**, not replacing, the existing Remnawave monitoring.
+This does not authorize merging the PR or changing Panel, Xray, firewall,
+VPN subscriptions, or the existing monitoring.
 
 ## Verified evidence
 
@@ -14,6 +15,20 @@ Panel or subscriptions without separate approval.
   https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41585457455
 - Five-node Kuma placement inventory:
   https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41588618734
+- Verified isolated Kuma installation and private monitor provisioning:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41597231351
+- Hostland parallel ProxySignal, eight stable full profiles all egress OK:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41597823123
+- ger1 restricted SSH Push and active 5-minute systemd timer:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41599478590
+- Two independent repeated UP observations, synthetic TEST DOWN, dedup,
+  silent recovery and postflight on both nodes:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41599745470
+- LIVE DOWN-only Telegram labels applied to two isolated adapters:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41600675811
+- Postflight verifies pinned SSH rejects arbitrary commands, source and
+  eight profiles remain fresh, live-only alert mode and unchanged VPN nodes:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41601014591
 
 Egress OK is **not** proof of original inbound, CDN transit, cascade hops,
 leastPing decision or a route of a specific hostname.
@@ -133,5 +148,9 @@ forced-command script and private secrets, retaining volumes until a
 separately approved backup/delete step. Check Panel, firewall, listeners,
 Xray and old Remnawave monitoring are unchanged.
 
-**Status: NO-GO for permanent rollout until SSH Push, Kuma initialization,
-DOWN-only Telegram delivery and resource stability are proven live.**
+**Status: GO for the approved parallel monitoring deployment as observed
+2026-11-03.** No retirement of older Remnawave monitoring is authorized.
+The checked-in PR remains open for review. This acceptance proves the observed
+cycles and mock failure transitions, not multi-day memory stability or outage
+of the actual Hostland server. Track ongoing RAM/PID and missing heartbeats.
+The monitor's Telegram delivery is at least once, not exactly once.
