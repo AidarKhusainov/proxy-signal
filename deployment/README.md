@@ -1,55 +1,137 @@
-# Hostland parallel deployment: manual review candidate
+# ProxySignal parallel deployment: manual, not yet live
 
-This Compose project is isolated from Remnawave. **Do not launch** until there is separate approval. Existing Remnawave monitoring remains active.
+This deployment is **not authorized to replace Remnawave monitoring**.
+Never deploy a permanent ProxySignal, merge a PR, alter firewall/Xray,
+Panel or subscriptions without separate approval.
 
-## Evidence already collected
+## Verified evidence
 
-- Hostland full-profile acceptance, three restarts and nine autonomous cycles per profile: https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41576809949
-- Live Telegram failure, no duplicate, recovery, durable queue: https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41580063695
-- Existing separate-outbound profile checks: https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41531253099
-- Observed peak: CPU 43.69%, memory 19.39 MiB, 19 PIDs. Laboratory cleanup completed.
-- General HTTPS egress does not attest client inbound, CDN route, cascade hops or leastPing policy.
+- Hostland 8-profile pilot, 9 scheduler cycles/profile, persistence and outage
+  recovery: https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41576809949
+- Real Telegram incident transitions and dedup:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41580063695
+- Read-only Hostland resource/Panel preflight:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41585457455
+- Five-node Kuma placement inventory:
+  https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41588618734
 
-## Preconditions: NO-GO until satisfied
+Egress OK is **not** proof of original inbound, CDN transit, cascade hops,
+leastPing decision or a route of a specific hostname.
 
-1. Perform a **new** read-only Hostland preflight using the existing remnawave-infra GitHub runner SSH mechanism with pinned host key: load, RAM, disk, Docker, containers, start times, networks, listeners and panel TLS health. Confirm the old lab container is absent. Do not alter production infrastructure.
-2. Independently provision a missed-heartbeat monitor (such as Healthchecks.io) outside Hostland: **period 2 minutes, grace 8 minutes**, with independent Telegram/email notifications. Prove real missed-ping delivery with a provider-side test. Never assume the preexisting Remnawave watchdog is configured.
-3. Build the image on a GitHub runner only. Publish it to a trusted registry and pin the resulting OCI **manifest digest** (sha256). Never build on Hostland or use a floating tag.
-4. Privately prepare one HTTPS Happ subscription with the registered monitoring device and eight exact selectors from config.example.yaml; keep subscription URL/HWID/Telegram token and all secret header values outside Git. Use the approved Telegram chat and label ProxySignal notices as separate pilot notifications. No mutations to Panel, users, subscriptions or nodes.
-5. Run offline watchdog tests and all existing Rust CI checks. Observe resources, Xray children and telemetry under the live Hostland limits before approval.
+## Layout
 
-## Layout and secrets
+- Hostland: separate `proxy-signal-parallel` Compose project, no public port,
+  UID 65532, read-only root, 0.5 CPU / 384 MiB / 64 PIDs, independent volume.
+- ger1: Kuma Push observer and restricted SSH receiver. Kuma listens
+  **only on 127.0.0.1:3001**, receives a Push after healthy source/profile
+  *freshness* checks every **5 minutes** on Hostland.
+- fin1: Kuma HTTPS Pull observer, checks the existing panel URL every
+  **5 minutes**. This measures Panel availability, not ProxySignal health.
+- Both: distinct local SQLite volumes and protected webhook adapters for
+  **DOWN-only Telegram**. UI only through authorized SSH tunnels.
+  No privileged containers, host networking, Docker socket or new public ports.
 
-Use /opt/proxy-signal-parallel/deployment for the Compose file and its private/config.yaml plus private/secrets/{hwid,user-agent,accept,telegram-token} (plus any other registered headers required by the subscription). The eight IDs are stable p01..p08. File permissions: private file owner root:65532, mode 0440, directories group 65532 mode 0750; prohibit world access. Never commit or print values.
+See `kuma-placement.md` for measured capacity and fail-open/closed details.
 
-The project name proxy-signal-parallel yields its own bridge network, container and persistent volume. No published ports, Docker socket, host network, or Remnawave mounts. The container runs as UID 65532 with read-only root, dropped capabilities, 0.5 CPU, 384 MiB and 64 PIDs. The service has restart policy and a small filesystem-based Docker healthcheck.
+## Before any changes on Hostland/production nodes
 
-Store the separate watchdog URL at /etc/proxy-signal-parallel/watchdog-url with root ownership and mode 0600. Copy deployment/watchdog.py to /opt/proxy-signal-parallel/watchdog.py. Install the two systemd unit files into /etc/systemd/system. The host timer checks that Docker reports the separate container healthy **and** that source plus all eight profile records are fresh before sending the HTTPS ping. Actual VPN FAILED/UNKNOWN does not suppress heartbeat; those are delivered by ProxySignal. A host outage or frozen process stops heartbeats, which the independent external provider must alert on. Do not enable the timer until the external provider is configured.
+1. Via the existing remnawave-infra GitHub runner SSH mechanism, verify
+   *current* CPU/RAM/disk, containers/start timestamps, network bindings,
+   sockets, TLS and panel health. Check Hostland can reach ger1's existing
+   SSH port 52222. Only use pinned SSH host keys from the inventory.
+2. On each node, resolve an **official, known-good Uptime Kuma v2 slim image**
+   and Python runtime image to **immutable OCI @sha256 manifests**, and
+   record their digests in a private .env. No image builds on VPN nodes.
+3. Give each observer its own Compose working directory and local SQLite
+   volume. For the DOWN-only adapter, precreate private/down-alert-state
+   owned by UID 65532 and the private secret files
+   (telegram-token, telegram-chat-id, webhook-key) as root:65532 0440.
+   Parent private directory must not be world-accessible.
+4. Keep the Kuma container bound to localhost; verify Docker did not publish
+   it on any other interface. Keep original Xray/RemnaNode containers and
+   listeners unchanged. Do not touch existing Ansible authorized_keys.
+5. Using an *authorized SSH tunnel*, initialize each Kuma admin account.
+   Configure only one monitor: ger1 Push; fin1 HTTPS Pull.
+   Set BOTH monitor heartbeat/check interval to **5 minutes**. On ger1
+   use Push retry settings sufficient to tolerate small timer jitter,
+   e.g. 360-second expected deadline with 2 retries of 60 seconds each.
+   Disable built-in recurring DOWN notifications; disable direct Telegram
+   notification providers and use the local DOWN-only webhook instead.
+   It should be configured to POST JSON to
+   http://down-only:8080/notify with the header
+   X-ProxySignal-Webhook-Key from the private webhook-key file.
+   Give the configured monitor the exact KUMA_MONITOR_NAME in .env.
+   Verify actual webhook fields with the pinned Kuma release before relying
+   on the filter. Test only clearly labeled TEST events in the approved chat.
 
-## Image/start (ONLY after separate authorization)
+## Restricted SSH from Hostland to ger1
 
-In a private .env file set PROXYSIGNAL_IMAGE to ghcr.io/OWNER/proxy-signal@sha256:ACTUAL_MANIFEST_DIGEST (64 hex). Pull the reviewed digest once, verify no mutable tag is substituted, and run:
+1. Generate a NEW dedicated Ed25519 key on Hostland in
+   /etc/proxy-signal-parallel/ssh/id_ed25519, mode 0600, never in Git
+   or GitHub Actions logs. Copy the public half only to ger1.
+2. Create a dedicated unprivileged ger1 account `kuma-push`, leaving the
+   production Ansible account untouched. Install
+   `deployment/kuma/ssh-push-receiver.py` at
+   /usr/local/bin/proxysignal-kuma-push, executable and root-owned.
+3. Configure only the dedicated account's authorized_keys with
+   `restrict,command="/usr/local/bin/proxysignal-kuma-push"` (also restrict
+   source IP with `from="..."` after verifying Hostland's actual egress
+   address). No interactive shell, SSH port forwarding, agent, X11 or PTY.
+4. Obtain the ger1 Kuma Push token from its authenticated UI. Store it
+   **only** on ger1 in /etc/proxysignal-kuma-push/token readable by the
+   dedicated account. The receiver accepts SSH_ORIGINAL_COMMAND=heartbeat
+   and calls 127.0.0.1:3001, never a user-supplied URL.
+5. Create pinned known_hosts on Hostland using the existing verified
+   remnawave-infra SSH host-key procedure, not `StrictHostKeyChecking=no`.
+   The watchdog service is already parameterized for the dedicated key.
+6. Execute a controlled, labeled test handshake and verify an actual UP Push
+   record on ger1, without sending a Telegram message for this success.
 
-    docker pull "$PROXYSIGNAL_IMAGE"
-    docker compose -f compose.yaml config --quiet
-    docker compose -f compose.yaml up -d --no-build --no-deps
+**Keep the watchdog timer disabled until the Kuma Push monitor exists and
+the SSH endpoint has passed the controlled live acceptance.**
 
-Wait for source/happ and all eight profile/happ/pXX records to be fresh, then:
+## Schedule and failure semantics
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now proxy-signal-parallel-watchdog.timer
-    sudo systemctl start proxy-signal-parallel-watchdog.service
+The Hostland systemd timer activates once every **5 minutes**.
+The watchdog reads Docker container health and last observation timestamps
+for source/happ and the eight stable profile/happ/pXX identities. If
+the scheduler is stopped/stale, it does not call SSH. A fresh VPN
+`FAILED` or `UNKNOWN` still permits the heartbeat; ProxySignal handles
+those VPN alerts independently.
 
-Confirm at least two provider heartbeat receipts, independent missed-ping notification, no duplicate alerts, preserved incidents, unchanged Panel containers, and no leaked Xray children. Do not simulate Hostland outages or stop production services.
+- First silence after a legitimate send: ger1 Kuma eventually reports
+  DOWN, expected after roughly 8–10 minutes with retry/jitter settings.
+- Hostland Panel HTTPS becomes unavailable: fin1 Kuma reports DOWN on
+  its independent 5-minute HTTP(S) schedule; this does not imply the
+  ProxySignal child process failed.
+- A full Hostland outage may produce **two distinct** DOWN events; that is
+  intentional independent evidence, not duplicate resend.
+- The local webhook adapter forwards only DOWN transitions, never UP or
+  periodic healthy events, and persistently suppresses repeated DOWN
+  webhooks. Its Telegram delivery is **at-least-once** around a
+  send-before-state-write crash; validate it instead of claiming
+  exactly-once semantics.
 
-## Update, rollback, removal
+## Test / update / rollback / remove
 
-**Update:** Build and publish a new image on GitHub runner, run CI and Hostland preflight, securely back up only the isolated persistent volume, update the image digest, pull it and re-run up --no-build for this project. Verify fresh state, watchdog and Telegram. Never delete the volume during updates.
+Run locally/offline on the GitHub runner:
 
-**Rollback:** Restore the previous image digest; restart only this Compose project. If state format changed, restore the matching private volume backup. Telegram is at-least-once, not exactly-once.
+    python3 -m unittest discover -s deployment/tests -p 'test_*.py' -v
 
-**Removal:** Disable the dedicated watchdog timer; docker compose -f compose.yaml down (never down -v by default). Revoke its external heartbeat URL, remove only the separate systemd files and private secrets with authorization. Delete the persistent volume separately only after approval and backup. Check old Remnawave monitoring is unchanged.
+On the actual nodes, observe CPU/RAM/PID/SQLite footprint and compare
+preflight/postflight production container start timestamps. Test only a
+**monitor-level** heartbeat pause (not a production Docker/Hostland kill),
+one DOWN Telegram delivery, silent recovery and suppressed duplicate.
+No production traffic impairment is allowed.
 
-**Offline tests:** python3 -m unittest discover -s deployment/tests -p 'test_*.py' -v
+For an approved upgrade, pin a new image digest, back up each independent
+Kuma/ProxySignal volume, and update **only** its own Compose project.
+For rollback, restore the former digest and its matching volume if a
+migration changed stored data. For removal, disable the Hostland dedicated
+timer; remove only the Kuma Compose projects, dedicated SSH key/account,
+forced-command script and private secrets, retaining volumes until a
+separately approved backup/delete step. Check Panel, firewall, listeners,
+Xray and old Remnawave monitoring are unchanged.
 
-**Status:** NO-GO until current Hostland preflight and independent external missed-ping delivery are verified. No persistent deployment is authorized by this PR.
+**Status: NO-GO for permanent rollout until SSH Push, Kuma initialization,
+DOWN-only Telegram delivery and resource stability are proven live.**
