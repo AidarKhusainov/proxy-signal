@@ -31,13 +31,14 @@ do not update/restart/remount any existing container to install Kuma.
   URL. This tests externally observed reachability of the panel, **not**
   ProxySignal process health or actual VPN route.
 - Monitors operate independently with separate SQLite volumes and separate
-  Telegram identities/labels. Only confirmed DOWN events must reach Telegram;
-  not periodic OK, repeated DOWN, or UP recovery events. As of 2026-11-03,
-  Uptime Kuma's built-in Telegram notification does **not** reliably provide
-  DOWN-only filtering (upstream issue #4744 remains open): do **not** enable it
-  directly for the approved chat until a tested local filtering adapter or
-  upstream event filter is available. Two distinct DOWN notices on a full
-  Hostland outage are acceptable; no shared suppression coordinator.
+  labels. Only confirmed DOWN events reach Telegram; not periodic OK, repeated
+  DOWN, or UP recovery events. Uptime Kuma's built-in notification provider
+  cannot be relied upon for DOWN-only filtering (upstream #4744). The
+  **separate, private** `down-only` webhook adapter in the Compose template
+  filters `heartbeat.status == 0` and suppresses repeated DOWN events.
+  This implementation still needs a live end-to-end acceptance test against
+  the selected Kuma version before attaching the authorized Telegram chat.
+  Two distinct DOWN notices on a full Hostland outage are acceptable.
 
 ## Push transport: restricted existing SSH, no WireGuard
 
@@ -67,7 +68,10 @@ Preflight must first confirm Hostland can resolve and reach ger1's actual
 SSH port and the installed SSH user/keys do not conflict with existing
 Ansible automation. Failure to deliver SSH heartbeat is never an OK.
 The receiver cannot be initialized until the first Kuma Push monitor has
-been configured securely and produced a private token on ger1.
+been configured securely and produced a private token on ger1. The Kuma
+webhook notification must target `http://down-only:8080/notify` on the
+dedicated Compose network with its `X-ProxySignal-Webhook-Key` header;
+never publish the filter on a host port.
 
 On fin1 only outbound HTTPS to the existing panel is needed; the read-only
 inventory already confirmed HTTP 200. Do not provide public web access to
@@ -98,4 +102,4 @@ Removal stops and removes only each dedicated Kuma Compose project and
 (optionally, after backup and permission) its dedicated local volume.
 Never remove or restart production remnanode/Xray/Remnawave containers.
 
-**NO-GO:** A dedicated SSH account/key and private Kuma Push token still need provisioning and live proof; DOWN-only notifications still require a verified filter. This document does not authorize permanent deployment.
+**NO-GO:** A dedicated SSH account/key and private Kuma Push token still need provisioning and live proof; the checked-in DOWN-only filter has offline tests but has not yet passed an end-to-end Telegram acceptance on the selected Kuma image. This document does not authorize permanent deployment.
