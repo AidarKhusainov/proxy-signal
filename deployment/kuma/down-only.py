@@ -68,6 +68,19 @@ def notify(label):
             raise ValueError("Telegram did not acknowledge DOWN")
 
 
+def process_event(body):
+    if not isinstance(body, dict) or not isinstance(body.get("heartbeat"), dict):
+        raise ValueError("invalid payload")
+    monitor = body.get("monitor")
+    if not isinstance(monitor, dict) or monitor.get("name") != os.environ["MONITOR_NAME"]:
+        raise ValueError("unexpected monitor")
+    status = body["heartbeat"].get("status")
+    previous = last_state()
+    if is_new_down(previous, status):
+        notify(os.environ["MONITOR_NAME"])
+    persist("DOWN" if status == 0 else "UP")
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # No request bodies, secrets or remote status in logs.
@@ -87,16 +100,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(413)
                 return
             body = json.loads(self.rfile.read(size))
-            if not isinstance(body, dict) or not isinstance(body.get("heartbeat"), dict):
-                raise ValueError("invalid payload")
-            monitor = body.get("monitor")
-            if not isinstance(monitor, dict) or monitor.get("name") != os.environ["MONITOR_NAME"]:
-                raise ValueError("unexpected monitor")
-            status = body["heartbeat"].get("status")
-            previous = last_state()
-            if is_new_down(previous, status):
-                notify(os.environ["MONITOR_NAME"])
-            persist("DOWN" if status == 0 else "UP")
+            process_event(body)
             self.send_response(200)
         except (OSError, ValueError, TypeError, KeyError, urllib.error.URLError,
                 json.JSONDecodeError):
