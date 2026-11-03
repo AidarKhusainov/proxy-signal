@@ -585,7 +585,11 @@ fn stamp_cycle(results: &mut [ResultRow], cycle_started_at: u64) {
 }
 
 fn candidate_key(balancer_key: &str, case: &BalancerScenario, index: usize) -> String {
-    match case.candidates.get(index).and_then(|tag| case.candidate_ids.get(tag)) {
+    match case
+        .candidates
+        .get(index)
+        .and_then(|tag| case.candidate_ids.get(tag))
+    {
         Some(id) => format!("{balancer_key}/candidate/id-{id}"),
         None => format!("{balancer_key}/candidate/{index}"),
     }
