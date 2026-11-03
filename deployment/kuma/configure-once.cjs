@@ -10,7 +10,7 @@ const { io } = require("socket.io-client");
 const mode = process.env.KUMA_MODE;
 const target = process.env.KUMA_TARGET;
 const port = Number(process.env.KUMA_LOCAL_PORT);
-if (!["configure", "resume", "inspect"].includes(mode) ||
+if (!["configure", "resume", "inspect", "verify"].includes(mode) ||
     !["ger1", "fin1"].includes(target) ||
     !Number.isInteger(port) || port < 1024 || port > 65535) {
     throw new Error("invalid target/mode/loopback port");
@@ -86,7 +86,12 @@ async function main() {
                 "missing or invalid Push token");
             fs.writeFileSync(process.env.KUMA_PUSH_TOKEN_OUT, info.pushToken+"\n",{mode:0o600});
         }
-        if(mode==="resume") {
+        if(mode==="verify") {
+            const beats=accepted("getMonitorBeats",await call("getMonitorBeats",id,1));
+            if(!Array.isArray(beats.data) || !beats.data.some(b=>b.status===1))
+                throw new Error("no confirmed UP heartbeat");
+            console.log("PASS: "+target+" has confirmed UP heartbeat");
+        } else if(mode==="resume") {
             accepted("resumeMonitor", await call("resumeMonitor",id));
             console.log("PASS: "+target+" monitor activated");
         } else {
