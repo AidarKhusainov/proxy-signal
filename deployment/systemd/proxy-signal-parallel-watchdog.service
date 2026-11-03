@@ -1,0 +1,13 @@
+[Unit]
+Description=ProxySignal parallel external heartbeat (no automatic remediation)
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/proxy-signal-parallel/watchdog.py --url-file /etc/proxy-signal-parallel/watchdog-url
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
