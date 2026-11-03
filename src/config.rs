@@ -452,7 +452,10 @@ impl Config {
                 }
                 if !case.candidate_ids.is_empty()
                     && (case.candidate_ids.len() != case.candidates.len()
-                        || case.candidate_ids.keys().any(|tag| !case.candidates.contains(tag))
+                        || case
+                            .candidate_ids
+                            .keys()
+                            .any(|tag| !case.candidates.contains(tag))
                         || case.candidate_ids.values().any(|id| !valid_id(id))
                         || case.candidate_ids.values().collect::<HashSet<_>>().len()
                             != case.candidate_ids.len())
@@ -736,9 +739,11 @@ mod tests {
         let yaml = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 2\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.org/ip }\nsources:\n  - kind: file\n    id: lab\n    path: /tmp/profile.json\n    balancers:\n      - id: pool\n        url: https://probe.example.net/\n        balancer_tag: pool\n        strategy: leastPing\n        candidates: [node-a, node-b]\n        candidate_ids: {node-a: sweden, node-b: finland}\n";
         let valid: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(valid.validate().is_ok());
-        let legacy: Config =
-            serde_yaml::from_str(&yaml.replace("        candidate_ids: {node-a: sweden, node-b: finland}\n", ""))
-                .unwrap();
+        let legacy: Config = serde_yaml::from_str(&yaml.replace(
+            "        candidate_ids: {node-a: sweden, node-b: finland}\n",
+            "",
+        ))
+        .unwrap();
         assert!(legacy.validate().is_ok());
         for candidate_ids in [
             "        candidate_ids: {node-a: sweden}\n",
@@ -746,9 +751,10 @@ mod tests {
             "        candidate_ids: {node-a: sweden, node-x: finland}\n",
             "        candidate_ids: {node-a: sweden, node-b: invalid/id}\n",
         ] {
-            let invalid: Config = serde_yaml::from_str(
-                &yaml.replace("        candidate_ids: {node-a: sweden, node-b: finland}\n", candidate_ids),
-            )
+            let invalid: Config = serde_yaml::from_str(&yaml.replace(
+                "        candidate_ids: {node-a: sweden, node-b: finland}\n",
+                candidate_ids,
+            ))
             .unwrap();
             assert!(invalid.validate().is_err());
         }
