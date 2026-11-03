@@ -84,7 +84,7 @@ async function main() {
         if(target==="ger1" && process.env.KUMA_PUSH_TOKEN_OUT) {
             assert(typeof info.pushToken==="string" && /^[a-zA-Z0-9_-]{8,128}$/.test(info.pushToken),
                 "missing or invalid Push token");
-            fs.writeFileSync(process.env.KUMA_PUSH_TOKEN_OUT, info.pushToken+"\\n",{mode:0o600});
+            fs.writeFileSync(process.env.KUMA_PUSH_TOKEN_OUT, info.pushToken+"\n",{mode:0o600});
         }
         if(mode==="resume") {
             accepted("resumeMonitor", await call("resumeMonitor",id));
