@@ -29,7 +29,7 @@ class GatusConfigTests(TestCase):
         self.assertIn("interval: 10m", value)
         self.assertIn("send-on-resolved: false", value)
         self.assertIn("hostland-https-secondary", value)
-        self.assertLess(value.index("    alerts:"), value.index("endpoints:"))
+        self.assertLess(value.index("    alerts:"), value.index("\nendpoints:"))
 
     def test_pull_is_exact_https_down_only(self):
         value = render.render("fin1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", enable_alerts=True)
