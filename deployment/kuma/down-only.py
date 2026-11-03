@@ -52,9 +52,13 @@ def notify(label):
     chat_id = Path("/run/secrets/telegram-chat-id").read_text(encoding="ascii").strip()
     if not token or not chat_id or len(token) > 256 or len(chat_id) > 64:
         raise ValueError("invalid Telegram secrets")
+    mode = os.environ.get("PROXYSIGNAL_ALERT_MODE", "test")
+    if mode not in ("test", "live"):
+        raise ValueError("invalid alert mode")
+    prefix = "[TEST ProxySignal]" if mode == "test" else "[ProxySignal]"
     data = json.dumps({
         "chat_id": chat_id,
-        "text": "[TEST ProxySignal] DOWN — " + label,
+        "text": prefix + " DOWN — " + label,
         "disable_notification": False,
     }).encode("utf-8")
     request = urllib.request.Request(
