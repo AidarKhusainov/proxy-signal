@@ -1,6 +1,31 @@
 # Staged Uptime Kuma → Gatus migration (ger1 Push, fin1 HTTPS Pull)
 
-**Status: configuration prepared, NOT deployed.** Keep both existing Kuma instances and their DOWN-only Telegram adapters active until the entire acceptance gate passes. Keep ProxySignal on Hostland and all Remnawave checks unchanged. Current Kuma topology and rollback context: [deployment/README.md](../README.md) and [kuma-placement.md](../kuma-placement.md).
+**Status: PRODUCTION MIGRATION COMPLETED, 2026-11-03.** Both old Kuma containers and DOWN-only adapters were stopped and removed, with Docker volumes left intact. Gatus is actively monitoring on both nodes. No public ports were introduced; RemnaNode, Hostland ProxySignal and the original Remnawave monitoring were preserved.
+
+Verified evidence:
+
+- [Read-only production preflight](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41610412123)
+- [Parallel Gatus installation, alerts disarmed](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41611663733)
+- [Functional authenticated heartbeat and HTTPS acceptance](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41611916261)
+- [Isolated TEST-only Telegram DOWN delivery on both nodes](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41612160611)
+- [ger1 restricted SSH / Hostland watchdog cutover](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41612738150)
+- [fin1 HTTPS alert cutover](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41612967295)
+- [Fresh successful Gatus observations and systemd timer](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41613426253)
+- [Final read-only post-retirement audit, both SQLite archives SHA256-verified](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41614146392)
+
+The actual OCI Gatus image is pinned in each node's private `.env` as `ghcr.io/twin/gatus@sha256:085ed63da963728965d00a3c78aa6167e3bf135218485b893201758e079e8415`. No container image was built on VPN hosts. The 128 MiB memory limit remains a cap, not a guarantee of maximum measured RSS; final observed container cgroup usage was **7.328 MiB on ger1** and **7.008 MiB on fin1**. Multi-day leak stability is not yet established.
+
+Operational state:
+
+- `ger1`: the original five-minute Hostland timer and key remain; the dedicated `kuma-push` account's single restricted authorized key now forces `/usr/local/bin/proxysignal-gatus-push`. Original authorized_keys is backed up as root-only `/etc/proxysignal-gatus-push/kuma-authorized-keys.backup`. The new token exists only on ger1. The Gatus external endpoint monitors missing heartbeat; its secondary Hostland HTTPS check is informational, not an additional Telegram alert.
+- `fin1`: Gatus HTTPS Pull checks the existing Panel URL on a five-minute schedule and alerts only on confirmed DOWN. Gatus Telegram alerts use the upstream message template, which is not fully Russian.
+- Both: local-only Gatus port `127.0.0.1:3002`, separate SQLite data, normal production RemnaNode unchanged. Old Kuma was paused before retirement, so it must be explicitly resumed if rolled back. No `docker compose down -v` was used.
+- The old Kuma Compose files, images, dedicated SSH receiver, tokens and Docker volumes were deliberately retained for rollback. Consistent stopped-state Kuma SQLite archives are held under `/var/backups/proxysignal-kuma-to-gatus-20261103-retry/` on ger1 and `/var/backups/proxysignal-kuma-to-gatus-20261103/` on fin1, root-only. A partial first-attempt ger1 backup directory was not deleted without verification.
+- This does not establish end-to-end VPN availability from Russian ISP networks. Such tests remain ProxySignal's responsibility on Hostland.
+
+**Rollback**: disable live Gatus Telegram alerts with `render-config.py` without `--enable-alerts` and restart only Gatus; on ger1 restore the backed-up single forced-command authorized_keys preserving owner/mode, start the old Kuma Compose project from its pinned image and unchanged Docker volume, then use the authenticated, SSH-tunnel-protected Kuma Socket.IO procedure to resume its Push monitor. On fin1 restore the old Kuma Compose project and resume its HTTPS monitor. Verify two fresh UP observations, pinned Hostland heartbeat, Telegram alerts, and unchanged VPN containers. Never restore a live SQLite database by copying over an open file.
+
+The sections below are the safe migration procedure retained for upgrades or rollback context; they describe the staged sequence originally followed, not the current live state.
 
 ## Replacement scope
 
