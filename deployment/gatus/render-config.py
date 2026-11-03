@@ -20,7 +20,7 @@ def read_secret(path, pattern):
     return value
 
 
-def render(role, telegram_token, chat_id, push_token=None):
+def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False):
     quote = json.dumps  # JSON quoted strings are valid YAML scalars.
     config = (
         "storage:\n  type: sqlite\n  path: /data/gatus.db\n"
@@ -70,6 +70,7 @@ def main():
     parser.add_argument("--role", required=True, choices=("ger1", "fin1"))
     parser.add_argument("--private-dir", required=True, type=Path)
     parser.add_argument("--push-token-file", type=Path)
+    parser.add_argument("--enable-alerts", action="store_true")
     args = parser.parse_args()
     directory = args.private_dir
     if directory.is_symlink() or not directory.is_dir() or directory.stat().st_mode & 0o077:
@@ -80,7 +81,7 @@ def main():
         read_secret(args.push_token_file, r"[A-Za-z0-9_-]{8,128}")
         if args.role == "ger1" and args.push_token_file else None
     )
-    content = render(args.role, telegram_token, chat_id, push_token)
+    content = render(args.role, telegram_token, chat_id, push_token, args.enable_alerts)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as stream:
         temporary = Path(stream.name)
         stream.write(content)
