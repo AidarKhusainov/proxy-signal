@@ -1,0 +1,30 @@
+# PRIVATE runtime copy: deployment/private/config.yaml (never commit it).
+# Replace URL/chat ID privately; header values are file paths, not inline secrets.
+version: 1
+interval_seconds: 300
+timeout_seconds: 45
+parallelism: 2
+state_file: /data/state.json
+endpoints:
+  - id: ipify
+    url: https://api.ipify.org
+sources:
+  - id: happ
+    kind: https
+    url: https://subscription.example.org/private-subscription
+    headers:
+      User-Agent: /run/secrets/user-agent
+      Accept: /run/secrets/accept
+      X-HWID: /run/secrets/hwid
+    profiles:
+      - {id: p01, remarks: "Автоподбор локации"}
+      - {id: p02, remarks: "Швеция"}
+      - {id: p03, remarks: "Германия"}
+      - {id: p04, remarks: "Финляндия"}
+      - {id: p05, remarks: "США"}
+      - {id: p06, remarks: "Финляндия (усиленный)"}
+      - {id: p07, remarks: "Москва → Финляндия (каскад)"}
+      - {id: p08, remarks: "Для ограниченных сетей"}
+telegram:
+  bot_token_file: /run/secrets/telegram-token
+  chat_id: "REPLACE_PRIVATELY"
