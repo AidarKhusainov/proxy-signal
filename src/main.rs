@@ -171,11 +171,20 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
             match result {
                 Ok((entry, Ok(Ok(document)))) => {
                     completed.insert(entry.id().to_string());
+                    // Loading the subscription is not proof that all expected
+                    // profiles are present and no extra entries appeared.
+                    let actual_entries = document.as_array().map_or(1, Vec::len);
                     match source::select(&entry, document) {
                         Ok(selected) => {
+                            let complete =
+                                source::selection_complete(&selected, actual_entries);
                             results.push((
                                 format!("source/{}", entry.id()),
-                                Observation::new(Status::Ok, "source_loaded"),
+                                if complete {
+                                    Observation::new(Status::Ok, "source_loaded")
+                                } else {
+                                    Observation::new(Status::Failed, "source_profile_contract_failed")
+                                },
                             ));
                             for selected in selected {
                                 if let Some(document) = selected.document {
