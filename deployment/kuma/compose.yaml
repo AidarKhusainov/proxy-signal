@@ -1,0 +1,24 @@
+# One independent project per selected VPN node. Do not start without approval.
+name: proxysignal-kuma-observer
+services:
+  kuma:
+    image: ${KUMA_IMAGE:?Set verified OCI image at @sha256 digest}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    cpus: 0.5
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 128
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - kuma-data:/app/data
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
+volumes:
+  kuma-data:
