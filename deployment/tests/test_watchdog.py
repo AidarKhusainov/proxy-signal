@@ -2,6 +2,8 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import patch
+import subprocess
 
 path = pathlib.Path(__file__).resolve().parents[1] / "watchdog.py"
 spec = importlib.util.spec_from_file_location("proxy_signal_watchdog", path)
@@ -48,6 +50,34 @@ class WatchdogStateTests(unittest.TestCase):
         state["records"]["source/happ"]["last_observed_at"] = True
         self.assertFalse(watchdog.validate_state(state, self.now))
         self.assertFalse(watchdog.validate_state({"version": 2, "records": {}}, self.now))
+
+
+    @patch.object(watchdog.subprocess, "run")
+    @patch.object(watchdog.Path, "is_file", return_value=True)
+    def test_ssh_uses_pinned_host_key_and_no_remote_token(self, is_file, run):
+        watchdog.ssh_ping("ger1.example.org", 52222, "kuma-push",
+                          "/secure/key", "/secure/known_hosts")
+        args = run.call_args.args[0]
+        self.assertIn("StrictHostKeyChecking=yes", args)
+        self.assertIn("ClearAllForwardings=yes", args)
+        self.assertIn("UserKnownHostsFile=/secure/known_hosts", args)
+        self.assertEqual(args[-2:], ["kuma-push@ger1.example.org", "heartbeat"])
+        self.assertNotIn("/api/push/", " ".join(args))
+        self.assertTrue(run.call_args.kwargs["check"])
+
+    @patch.object(watchdog.subprocess, "run")
+    @patch.object(watchdog.Path, "is_file", return_value=True)
+    def test_ssh_error_propagates_without_fake_heartbeat(self, is_file, run):
+        run.side_effect = subprocess.CalledProcessError(255, ["ssh"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            watchdog.ssh_ping("ger1.example.org", 52222, "kuma-push",
+                              "/secure/key", "/secure/known_hosts")
+
+    @patch.object(watchdog.subprocess, "run")
+    def test_ssh_rejects_invalid_target(self, run):
+        with self.assertRaises(ValueError):
+            watchdog.ssh_ping("-bad", 52222, "kuma-push", "/k", "/hosts")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":
