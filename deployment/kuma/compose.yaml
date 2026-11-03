@@ -36,6 +36,7 @@ services:
     cpus: 0.1
     environment:
       MONITOR_NAME: ${KUMA_MONITOR_NAME:?Set the exact monitored name}
+      PROXYSIGNAL_ALERT_MODE: ${PROXYSIGNAL_ALERT_MODE:-test}
       PYTHONDONTWRITEBYTECODE: "1"
     command: ["python3", "/app/down-only.py"]
     volumes:
