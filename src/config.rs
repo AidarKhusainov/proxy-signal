@@ -736,16 +736,16 @@ mod tests {
         let valid: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(valid.validate().is_ok());
         let legacy: Config =
-            serde_yaml::from_str(&yaml.replace("        candidate_ids: [sweden, finland]\\n", ""))
+            serde_yaml::from_str(&yaml.replace("        candidate_ids: [sweden, finland]\n", ""))
                 .unwrap();
         assert!(legacy.validate().is_ok());
         for candidate_ids in [
-            "        candidate_ids: [sweden]\\n",
-            "        candidate_ids: [sweden, sweden]\\n",
-            "        candidate_ids: [sweden, invalid/id]\\n",
+            "        candidate_ids: [sweden]\n",
+            "        candidate_ids: [sweden, sweden]\n",
+            "        candidate_ids: [sweden, invalid/id]\n",
         ] {
             let invalid: Config = serde_yaml::from_str(
-                &yaml.replace("        candidate_ids: [sweden, finland]\\n", candidate_ids),
+                &yaml.replace("        candidate_ids: [sweden, finland]\n", candidate_ids),
             )
             .unwrap();
             assert!(invalid.validate().is_err());
