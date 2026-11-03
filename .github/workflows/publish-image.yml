@@ -1,0 +1,33 @@
+name: Publish pinned ProxySignal image (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: proxy-signal-manual-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Test deployment watchdog
+        run: python3 -m unittest discover -s deployment/tests -p 'test_*.py' -v
+      - name: Publish image built on GitHub runner
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/$owner/proxy-signal"
+          tag="$image:$GITHUB_SHA"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --pull -t "$tag" .
+          docker push "$tag"
+          digest="$(docker buildx imagetools inspect "$tag" | awk '$1=="Digest:" {print $2; exit}')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          echo "Immutable image: $image@$digest" >> "$GITHUB_STEP_SUMMARY"
+          docker logout ghcr.io
