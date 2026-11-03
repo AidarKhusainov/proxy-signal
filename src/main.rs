@@ -11,7 +11,7 @@ mod telegram;
 mod xray;
 
 use crate::{
-    config::{Config, Source},
+    config::{BalancerScenario, Config, Source},
     incident::{Observation, State, Status},
     probe::TargetResult,
 };
@@ -306,7 +306,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                 case.candidates
                                     .iter()
                                     .enumerate()
-                                    .map(|(index, _)| (candidate_key(&key, index), missing)),
+                                    .map(|(index, _)| (candidate_key(&key, case, index), missing)),
                             );
                             rows
                         })
@@ -431,7 +431,7 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
                                             .zip(evidence.candidate_details)
                                             .enumerate()
                                             .map(|(index, (_, observation))| {
-                                                (candidate_key(&key, index), observation)
+                                                (candidate_key(&key, case, index), observation)
                                             }),
                                     );
                                     rows
@@ -584,8 +584,11 @@ fn stamp_cycle(results: &mut [ResultRow], cycle_started_at: u64) {
     }
 }
 
-fn candidate_key(balancer_key: &str, index: usize) -> String {
-    format!("{balancer_key}/candidate/{index}")
+fn candidate_key(balancer_key: &str, case: &BalancerScenario, index: usize) -> String {
+    match case.candidate_ids.get(index) {
+        Some(id) => format!("{balancer_key}/candidate/id-{id}"),
+        None => format!("{balancer_key}/candidate/{index}"),
+    }
 }
 
 fn unavailable_profile(results: &mut Vec<ResultRow>, entry: &Source, code: &'static str) {
@@ -661,7 +664,7 @@ fn unavailable_checks(results: &mut Vec<ResultRow>, entry: &Source, code: &'stat
         }
         for (index, _) in case.candidates.iter().enumerate() {
             results.push((
-                candidate_key(&key, index),
+                candidate_key(&key, case, index),
                 Observation::new(Status::Unknown, code),
             ));
         }
@@ -815,7 +818,11 @@ mod tests {
 
     #[test]
     fn candidate_observation_keys_never_embed_sensitive_outbound_tags() {
-        let key = candidate_key("balancer/source/latency", 1);
+        let case: BalancerScenario = serde_yaml::from_str(
+            "id: latency\nurl: https://example.org/\nbalancer_tag: pool\nstrategy: leastPing\ncandidates: [a, b]\n",
+        )
+        .unwrap();
+        let key = candidate_key("balancer/source/latency", &case, 1);
         assert_eq!(key, "balancer/source/latency/candidate/1");
         assert!(!key.contains("private-operator-node"));
     }
