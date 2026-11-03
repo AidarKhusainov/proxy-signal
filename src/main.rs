@@ -585,7 +585,7 @@ fn stamp_cycle(results: &mut [ResultRow], cycle_started_at: u64) {
 }
 
 fn candidate_key(balancer_key: &str, case: &BalancerScenario, index: usize) -> String {
-    match case.candidate_ids.get(index) {
+    match case.candidates.get(index).and_then(|tag| case.candidate_ids.get(tag)) {
         Some(id) => format!("{balancer_key}/candidate/id-{id}"),
         None => format!("{balancer_key}/candidate/{index}"),
     }
@@ -800,11 +800,11 @@ mod tests {
     #[test]
     fn explicit_candidate_ids_keep_incidents_stable_after_reordering() {
         let before: Source = serde_yaml::from_str(
-            "kind: file\nid: lab\npath: /tmp/profile.json\nbalancers:\n  - id: pool\n    url: https://example.org/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [private-sweden-outbound, private-finland-outbound]\n    candidate_ids: [sweden, finland]\n",
+            "kind: file\nid: lab\npath: /tmp/profile.json\nbalancers:\n  - id: pool\n    url: https://example.org/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [private-sweden-outbound, private-finland-outbound]\n    candidate_ids: {private-sweden-outbound: sweden, private-finland-outbound: finland}\n",
         )
         .unwrap();
         let after: Source = serde_yaml::from_str(
-            "kind: file\nid: lab\npath: /tmp/profile.json\nbalancers:\n  - id: pool\n    url: https://example.org/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [private-finland-outbound, private-sweden-outbound]\n    candidate_ids: [finland, sweden]\n",
+            "kind: file\nid: lab\npath: /tmp/profile.json\nbalancers:\n  - id: pool\n    url: https://example.org/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [private-finland-outbound, private-sweden-outbound]\n    candidate_ids: {private-sweden-outbound: sweden, private-finland-outbound: finland}\n",
         )
         .unwrap();
         let first = &before.balancers()[0];
