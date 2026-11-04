@@ -29,6 +29,10 @@ pub struct Scenario {
     pub url: String,
     pub route: ExpectedRoute,
     pub outbound_tag: String,
+    /// Probe only this outbound through an isolated loopback inbound.
+    /// Does not attest the original profile's routing policy.
+    #[serde(default)]
+    pub independent_outbound: bool,
     #[serde(default)]
     pub dns: Option<DnsExpectation>,
 }
@@ -68,6 +72,9 @@ pub struct CdnScenario {
     pub expected_http_status: u16,
     pub url: String,
     pub outbound_tag: String,
+    /// Test the XHTTP outbound independently of the active primary route.
+    #[serde(default)]
+    pub independent_outbound: bool,
 }
 
 /// Controlled lab-only failover. The primary must be a local SOCKS outbound
@@ -380,6 +387,11 @@ impl Config {
             for case in source.scenarios() {
                 if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
                     bail!("invalid or duplicate scenario id");
+                }
+                if case.independent_outbound
+                    && (case.route == ExpectedRoute::Block || case.dns.is_some())
+                {
+                    bail!("independent outbound cannot prove blocking or original DNS");
                 }
                 let url = validate_https(&case.url)?;
                 let destination = (
