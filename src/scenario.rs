@@ -116,10 +116,24 @@ pub fn evaluate_for_inbound(
             return Observation::new(Status::Failed, "block_bypassed");
         }
     } else if !http_ok {
-        return Observation::new(Status::Failed, "routed_https_failed");
+        return Observation::new(
+            Status::Failed,
+            if case.independent_outbound {
+                "outbound_https_failed"
+            } else {
+                "routed_https_failed"
+            },
+        );
     }
     let Some(dns) = &case.dns else {
-        return Observation::new(Status::Ok, "routing_verified");
+        return Observation::new(
+            Status::Ok,
+            if case.independent_outbound {
+                "outbound_https_verified"
+            } else {
+                "routing_verified"
+            },
+        );
     };
     let Ok(url) = reqwest::Url::parse(&case.url) else {
         return Observation::new(Status::Unsupported, "scenario_invalid_url");
@@ -199,6 +213,7 @@ mod tests {
                 ExpectedRoute::Block => "blocked",
             }
             .into(),
+            independent_outbound: false,
             dns: dns.then(|| DnsExpectation {
                 server: "UDP:1.1.1.1:53".into(),
                 expected_ips: vec!["93.184.215.14".parse().unwrap()],
