@@ -1,0 +1,27 @@
+name: Issue 13 pinned real Xray smoke (verification only)
+
+on:
+  push:
+    branches: [verification/issue13-xray-smoke-20261104]
+    paths: ['.github/workflows/verify-issue13-xray-smoke.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue13-xray-smoke-readonly
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout verified PR code plus isolated workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run existing pinned Xray Docker smoke without production credentials
+        run: |
+          set -euo pipefail
+          timeout 900 sh scripts/smoke-docker.sh
