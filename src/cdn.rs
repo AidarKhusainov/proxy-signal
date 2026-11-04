@@ -240,7 +240,7 @@ pub fn tunnel_for_inbound(
     access: Option<&str>,
     inbound_tag: &str,
 ) -> Observation {
-    if !attributable(profile, case) {
+    if !case.independent_outbound && !attributable(profile, case) {
         return unavailable(Status::Unknown, "cdn_tunnel_route_not_attributable");
     }
     let (Some(http_ok), Some(access)) = (http_ok, access) else {
@@ -251,7 +251,14 @@ pub fn tunnel_for_inbound(
             unavailable(Status::Failed, "cdn_unexpected_outbound")
         }
         Ok(_) if !http_ok => unavailable(Status::Failed, "cdn_tunnel_https_failed"),
-        Ok(_) => unavailable(Status::Ok, "cdn_tunnel_https_verified"),
+        Ok(_) => unavailable(
+            Status::Ok,
+            if case.independent_outbound {
+                "cdn_outbound_https_verified"
+            } else {
+                "cdn_tunnel_https_verified"
+            },
+        ),
         Err(_) => unavailable(Status::Unknown, "cdn_tunnel_route_unobserved"),
     }
 }
@@ -320,6 +327,7 @@ mod tests {
             expected_http_status: 404,
             url: "https://example.com/".into(),
             outbound_tag: "vpn".into(),
+            independent_outbound: false,
         }
     }
     fn profile() -> Value {
