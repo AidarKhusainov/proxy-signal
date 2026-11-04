@@ -390,6 +390,43 @@ mod tests {
     }
 
     #[test]
+    fn independent_cdn_outbound_has_separate_https_proof_without_route_claim() {
+        let mut case = case();
+        case.independent_outbound = true;
+        let mut profile = profile();
+        // Original route intentionally points elsewhere; a fallback needs
+        // independent checking even while the primary is healthy.
+        profile["routing"]["rules"][0]["outboundTag"] = json!("primary");
+        let access = "2026/01/01 from 127.0.0.1:1 accepted //example.com:443 [proxy-signal-candidate-0 ==> vpn]";
+        let checked = tunnel_for_inbound(
+            &profile,
+            &case,
+            Some(true),
+            Some(access),
+            "proxy-signal-candidate-0",
+        );
+        assert_eq!(checked.status, Status::Ok);
+        assert_eq!(checked.code, "cdn_outbound_https_verified");
+        assert_eq!(route().status, Status::Unknown);
+        assert_eq!(
+            tunnel_for_inbound(
+                &profile,
+                &case,
+                Some(true),
+                Some(&access.replace("==> vpn", "==> primary")),
+                "proxy-signal-candidate-0"
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            tunnel_for_inbound(&profile, &case, Some(true), None, "proxy-signal-candidate-0")
+                .status,
+            Status::Unknown
+        );
+    }
+
+    #[test]
     fn endpoint_tls_http_and_route_are_independent() {
         let ok = unavailable(Status::Ok, "verified");
         let fail = unavailable(Status::Failed, "failed");
