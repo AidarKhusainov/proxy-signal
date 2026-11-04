@@ -1,0 +1,27 @@
+name: Issue 13 independent outbound pinned Xray integration (verification only)
+
+on:
+  push:
+    branches: [verification/issue13-independent-smoke-20261104]
+    paths: ['.github/workflows/verify-issue13-independent-smoke.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue13-independent-xray-smoke-readonly
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout reviewed PR tree plus one-off verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Execute confined pinned Xray smoke with isolated outbound proof
+        run: |
+          set -euo pipefail
+          timeout 900 sh scripts/smoke-docker.sh
