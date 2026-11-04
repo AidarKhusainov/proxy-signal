@@ -420,8 +420,14 @@ mod tests {
             Status::Failed
         );
         assert_eq!(
-            tunnel_for_inbound(&profile, &case, Some(true), None, "proxy-signal-candidate-0")
-                .status,
+            tunnel_for_inbound(
+                &profile,
+                &case,
+                Some(true),
+                None,
+                "proxy-signal-candidate-0"
+            )
+            .status,
             Status::Unknown
         );
     }
