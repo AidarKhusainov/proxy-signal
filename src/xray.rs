@@ -625,18 +625,30 @@ pub async fn check(
             .zip(scenarios)
             .map(|(attempt, case)| match attempt {
                 Err(observation) => observation,
-                Ok(http_ok) => match &logs {
-                    Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
-                        scenario::evaluate_for_inbound(
-                            case,
-                            http_ok,
-                            access,
-                            error.as_deref().unwrap_or(""),
-                            &inbound_tag,
-                        )
+                Ok(http_ok) => {
+                    let diagnostic_inbound = if case.independent_outbound {
+                        diagnostics
+                            .iter()
+                            .find(|(tag, _, _)| tag == &case.outbound_tag)
+                            .map(|(_, name, _)| name.as_str())
+                    } else {
+                        Some(inbound_tag.as_str())
+                    };
+                    match (diagnostic_inbound, &logs) {
+                        (Some(probe_inbound), Some((Some(access), error)))
+                            if case.dns.is_none() || error.is_some() =>
+                        {
+                            scenario::evaluate_for_inbound(
+                                case,
+                                http_ok,
+                                access,
+                                error.as_deref().unwrap_or(""),
+                                probe_inbound,
+                            )
+                        }
+                        _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
                     }
-                    _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
-                },
+                }
             })
             .collect();
         let balancers = balancers
@@ -761,15 +773,27 @@ pub async fn check(
                         route: cdn::route(),
                     };
                 }
-                CdnChecks {
-                    config,
-                    tunnel: cdn::tunnel_for_inbound(
+                let diagnostic_inbound = if case.independent_outbound {
+                    diagnostics
+                        .iter()
+                        .find(|(tag, _, _)| tag == &case.outbound_tag)
+                        .map(|(_, name, _)| name.as_str())
+                } else {
+                    Some(inbound_tag.as_str())
+                };
+                let tunnel = match diagnostic_inbound {
+                    Some(probe_inbound) => cdn::tunnel_for_inbound(
                         &original,
                         case,
                         http_ok,
                         logs.as_ref().and_then(|(access, _)| access.as_deref()),
-                        &inbound_tag,
+                        probe_inbound,
                     ),
+                    None => Observation::new(Status::Unknown, "cdn_outbound_not_instrumented"),
+                };
+                CdnChecks {
+                    config,
+                    tunnel,
                     route: cdn::route(),
                 }
             })
