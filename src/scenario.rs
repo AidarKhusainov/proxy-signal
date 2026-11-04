@@ -216,13 +216,7 @@ mod tests {
         let mut case = case(ExpectedRoute::Proxy, false);
         case.independent_outbound = true;
         let access = "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted //example.org:443 [proxy-signal-candidate-0 ==> vpn]";
-        let verified = evaluate_for_inbound(
-            &case,
-            true,
-            access,
-            "",
-            "proxy-signal-candidate-0",
-        );
+        let verified = evaluate_for_inbound(&case, true, access, "", "proxy-signal-candidate-0");
         assert_eq!(verified.status, Status::Ok);
         assert_eq!(verified.code, "outbound_https_verified");
         assert_eq!(
@@ -237,8 +231,7 @@ mod tests {
             Status::Failed
         );
         assert_eq!(
-            evaluate_for_inbound(&case, false, access, "", "proxy-signal-candidate-0")
-                .status,
+            evaluate_for_inbound(&case, false, access, "", "proxy-signal-candidate-0").status,
             Status::Failed
         );
         assert_eq!(
