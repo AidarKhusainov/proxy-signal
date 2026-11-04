@@ -738,6 +738,22 @@ mod tests {
     }
 
     #[test]
+    fn independent_outbound_rejects_unprovable_dns_and_block_route() {
+        let sample = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 1\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.com/ip }\nsources:\n  - kind: file\n    id: lab\n    path: /tmp/profile.json\n    scenarios:\n      - id: independent\n        url: https://example.net/\n        route: proxy\n        outbound_tag: vpn\n        independent_outbound: true\n";
+        let parsed: Config = serde_yaml::from_str(sample).unwrap();
+        assert!(parsed.validate().is_ok());
+        let blocked: Config = serde_yaml::from_str(&sample.replace("route: proxy", "route: block"))
+            .unwrap();
+        assert!(blocked.validate().is_err());
+        let dns = sample.replace(
+            "independent_outbound: true",
+            "independent_outbound: true\n        dns:\n          server: UDP:1.1.1.1:53\n          expected_ips: [93.184.215.14]",
+        );
+        let parsed: Config = serde_yaml::from_str(&dns).unwrap();
+        assert!(parsed.validate().is_err());
+    }
+
+    #[test]
     fn optional_balancer_scenarios_parse_strictly() {
         let sample = "kind: file\nid: node\npath: /tmp/profile.json\nbalancers:\n  - id: preferred\n    url: https://example.com/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [node-a, node-b]\n";
         let source: Source = serde_yaml::from_str(sample).unwrap();
@@ -795,6 +811,18 @@ mod tests {
             &yaml.replace("outbound_tag: vpn", "unknown_field: vpn")
         )
         .is_err());
+    }
+
+    #[test]
+    fn cdn_independent_outbound_flag_is_explicit_and_backward_compatible() {
+        let yaml = "kind: file\nid: lab\npath: /tmp/profile.json\ncdn:\n  - id: edge\n    endpoint_url: https://cdn.example.org/generate_204\n    expected_http_status: 204\n    url: https://example.net/\n    outbound_tag: vpn\n";
+        let legacy: Source = serde_yaml::from_str(yaml).unwrap();
+        assert!(!legacy.cdn()[0].independent_outbound);
+        let independent: Source = serde_yaml::from_str(
+            &yaml.replace("    outbound_tag: vpn", "    outbound_tag: vpn\n    independent_outbound: true"),
+        )
+        .unwrap();
+        assert!(independent.cdn()[0].independent_outbound);
     }
 
     #[test]
