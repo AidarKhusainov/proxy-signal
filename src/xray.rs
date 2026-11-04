@@ -427,8 +427,43 @@ pub async fn check(
                 )
             });
         }
-        // CDN tunnel requests run through the original outbound routing, not a
-        // synthetic replacement of its XHTTP transport.
+        // Independent outbound checks start before ordinary egress requests.
+        // They exercise the unchanged Xray outbound through a diagnostic
+        // inbound, without claiming the client's original route was selected.
+        let mut scenario_tasks = JoinSet::new();
+        let mut independent_scenario_http = vec![None; scenarios.len()];
+        for (index, case) in scenarios.iter().enumerate() {
+            if !case.independent_outbound || scenario::static_check(&original, case).is_some() {
+                continue;
+            }
+            let Some((_, _, candidate_port)) = diagnostics
+                .iter()
+                .find(|(tag, _, _)| tag == &case.outbound_tag)
+            else {
+                continue;
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                continue;
+            }
+            let url = case.url.clone();
+            let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
+            scenario_tasks.spawn(async move {
+                (
+                    index,
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&url, &candidate_proxy, remaining),
+                    )
+                    .await
+                    .ok(),
+                )
+            });
+        }
+        // CDN tunnel requests preserve the original transport and credentials.
+        // The optional independent mode forces only the test inbound to the
+        // configured outbound; it does not test fallback selection itself.
+
         let mut cdn_tasks = JoinSet::new();
         let mut cdn_http = vec![None; cdn_cases.len()];
         for (index, (case, config)) in cdn_cases.iter().zip(&inspected_cdn).enumerate() {
@@ -440,7 +475,17 @@ pub async fn check(
                 continue;
             }
             let url = case.url.clone();
-            let route_proxy = proxy.clone();
+            let route_proxy = if case.independent_outbound {
+                let Some((_, _, candidate_port)) = diagnostics
+                    .iter()
+                    .find(|(tag, _, _)| tag == &case.outbound_tag)
+                else {
+                    continue;
+                };
+                format!("http://127.0.0.1:{candidate_port}")
+            } else {
+                proxy.clone()
+            };
             cdn_tasks.spawn(async move {
                 (
                     index,
@@ -504,11 +549,27 @@ pub async fn check(
             }
             egress.push(observation);
         }
+        while let Some(joined) = scenario_tasks.join_next().await {
+            if let Ok((index, result)) = joined {
+                independent_scenario_http[index] = result;
+            }
+        }
         let mut attempts: Vec<std::result::Result<bool, Observation>> =
             Vec::with_capacity(scenarios.len());
-        for case in scenarios {
+        for (index, case) in scenarios.iter().enumerate() {
             if let Some(unsupported) = scenario::static_check(&original, case) {
                 attempts.push(Err(unsupported));
+                continue;
+            }
+            if case.independent_outbound {
+                if let Some(http_ok) = independent_scenario_http[index] {
+                    attempts.push(Ok(http_ok));
+                } else {
+                    attempts.push(Err(Observation::new(
+                        Status::Unknown,
+                        "outbound_probe_unobserved",
+                    )));
+                }
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
