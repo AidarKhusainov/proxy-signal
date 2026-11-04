@@ -51,6 +51,29 @@ controlled client test; no synthetic egress result proves it.
 
 Probes that intentionally modify routes to simulate a failed candidate are **simulation** checks, not proofs of automatic failover in an unchanged client. Live network impairment requires separate isolated execution and explicit opt-in; never modify the host firewall or production nodes.
 
+### Independent outbound diagnostics
+
+For an optional `scenarios[]` check, `independent_outbound: true` adds a
+temporary loopback HTTP inbound with a rule selecting exactly the configured
+`outbound_tag`. The original Xray outbounds, transport settings, DNS, dialer
+dependencies and normal diagnostic inbound rules are retained. A successful
+HTTPS probe with matching Xray access-log evidence reports
+`outbound_https_verified`, **not** proof of the original profile's routing
+policy or client inbound. Such checks cannot assert blocking or original
+DNS-routing observations; configuration validation rejects those combinations.
+
+For `cdn[]`, the same option checks the XHTTP outbound while another route
+remains primary. Native CDN DNS/TLS/HTTP and HTTPS over the XHTTP outbound
+produce separate observations and incidents. These observations do **not**
+prove that the provider traversed a particular CDN edge, or that automatic
+fallback selected it. CDN route/fallback evidence stays `UNKNOWN` without
+independent proof. If either probe or its access evidence is missing, no
+success is inferred. Diagnostic inbounds bind only to loopback, and no
+production service, firewall or client profile is changed.
+
+The option defaults to `false` to retain original-route behavior of existing
+configurations.
+
 ## Data and identity
 
 - Stable IDs for source/profile/scenario. Do not use profile display names as unique identifiers.
