@@ -286,29 +286,40 @@ pub async fn check(
         .iter()
         .map(|case| cdn::inspect(&original, case))
         .collect();
-    // Each unique candidate is tested through a temporary inbound with a
-    // dedicated routing rule. Original probe-in traffic never matches these
-    // rules, so the balancer's normal route remains intact.
+    // Diagnostic traffic is isolated by inboundTag. The original probe-in
+    // keeps the full profile's unchanged routing rules. Each unique outbound
+    // gets a loopback-only inlet shared by all checks for that outbound.
+    let mut wanted_tags = Vec::new();
+    for (case, status) in balancers.iter().zip(&inspected) {
+        if status.status == Status::Ok {
+            wanted_tags.extend(case.candidates.iter().map(String::as_str));
+        }
+    }
+    for case in scenarios {
+        if case.independent_outbound && scenario::static_check(&original, case).is_none() {
+            wanted_tags.push(case.outbound_tag.as_str());
+        }
+    }
+    for (case, status) in cdn_cases.iter().zip(&inspected_cdn) {
+        if case.independent_outbound && status.status == Status::Ok {
+            wanted_tags.push(case.outbound_tag.as_str());
+        }
+    }
     let mut diagnostics: Vec<(String, String, u16)> = Vec::new();
     let mut used_ports = HashSet::from([port]);
-    for (case, status) in balancers.iter().zip(&inspected) {
-        if status.status != Status::Ok {
+    for tag in wanted_tags {
+        if diagnostics.iter().any(|(existing, _, _)| existing == tag) {
             continue;
         }
-        for tag in &case.candidates {
-            if diagnostics.iter().any(|(existing, _, _)| existing == tag) {
-                continue;
+        let candidate_port = loop {
+            let socket = TcpListener::bind("127.0.0.1:0").context("candidate_loopback_bind")?;
+            let candidate_port = socket.local_addr()?.port();
+            if used_ports.insert(candidate_port) {
+                break candidate_port;
             }
-            let candidate_port = loop {
-                let socket = TcpListener::bind("127.0.0.1:0").context("candidate_loopback_bind")?;
-                let candidate_port = socket.local_addr()?.port();
-                if used_ports.insert(candidate_port) {
-                    break candidate_port;
-                }
-            };
-            let inbound = format!("proxy-signal-candidate-{}", diagnostics.len());
-            diagnostics.push((tag.clone(), inbound, candidate_port));
-        }
+        };
+        let inbound = format!("proxy-signal-candidate-{}", diagnostics.len());
+        diagnostics.push((tag.to_owned(), inbound, candidate_port));
     }
     if !diagnostics.is_empty() {
         install_candidate_diagnostics(&mut config, &diagnostics)?;
@@ -1140,6 +1151,7 @@ mod tests {
             url: "https://example.org/".into(),
             route: ExpectedRoute::Proxy,
             outbound_tag: "vpn".into(),
+            independent_outbound: false,
             dns: None,
         };
         assert_eq!(
@@ -1192,6 +1204,7 @@ mod tests {
             url: "https://example.org/".into(),
             route: crate::config::ExpectedRoute::Proxy,
             outbound_tag: "vpn".into(),
+            independent_outbound: false,
             dns: None,
         };
         let log = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [socks-client ==> vpn]";
