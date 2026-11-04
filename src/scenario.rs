@@ -212,6 +212,42 @@ mod tests {
         "2026/01/01 00:00:00 [Info] app/dns: UDP:1.1.1.1:53 got answer: example.org. TypeA -> [93.184.215.14] 5ms";
 
     #[test]
+    fn isolated_outbound_probe_does_not_claim_original_routing() {
+        let mut case = case(ExpectedRoute::Proxy, false);
+        case.independent_outbound = true;
+        let access = "2026/01/01 00:00:00 from 127.0.0.1:2345 accepted //example.org:443 [proxy-signal-candidate-0 ==> vpn]";
+        let verified = evaluate_for_inbound(
+            &case,
+            true,
+            access,
+            "",
+            "proxy-signal-candidate-0",
+        );
+        assert_eq!(verified.status, Status::Ok);
+        assert_eq!(verified.code, "outbound_https_verified");
+        assert_eq!(
+            evaluate_for_inbound(
+                &case,
+                true,
+                &access.replace("==> vpn", "==> direct"),
+                "",
+                "proxy-signal-candidate-0",
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            evaluate_for_inbound(&case, false, access, "", "proxy-signal-candidate-0")
+                .status,
+            Status::Failed
+        );
+        assert_eq!(
+            evaluate_for_inbound(&case, true, "", "", "proxy-signal-candidate-0").status,
+            Status::Unknown
+        );
+    }
+
+    #[test]
     fn routing_proof_requires_exact_access_tag() {
         let direct = case(ExpectedRoute::Direct, false);
         assert!(static_check(
