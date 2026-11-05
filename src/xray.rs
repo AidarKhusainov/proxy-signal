@@ -613,7 +613,7 @@ pub async fn check(
         Ok((egress, attempts, balancing, cascade_http, cdn_http))
     }
     .await;
-    child.stop().await;
+    child.flush_and_stop().await;
     // Read only after process termination; cap both logs and fail closed on
     // oversized, invalid or inaccessible diagnostic data.
     let logs = if scenarios.is_empty()
@@ -962,6 +962,21 @@ impl ManagedChild {
         let _ = self.child.start_kill();
     }
 
+    /// Allow a completed Xray probe to flush its buffered access evidence
+    /// before forcibly reaping the process group. A cancelled probe still
+    /// uses Drop and kills the entire group immediately.
+    pub(crate) async fn flush_and_stop(&mut self) {
+        #[cfg(unix)]
+        if !self.finished {
+            if let Some(group) = self.process_group {
+                use nix::sys::signal::{killpg, Signal};
+                let _ = killpg(group, Signal::SIGTERM);
+                sleep(Duration::from_millis(250)).await;
+            }
+        }
+        self.stop().await;
+    }
+
     pub(crate) async fn stop(&mut self) {
         if self.finished {
             return;
@@ -984,6 +999,28 @@ impl Drop for ManagedChild {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_probe_can_flush_access_evidence_before_forced_cleanup() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("flushed");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("trap 'printf flushed > \"$1\"; exit 0' TERM; while :; do sleep 0.02; done")
+            .arg("diagnostic")
+            .arg(&marker)
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        let mut managed = ManagedChild::new(command.spawn().unwrap());
+        sleep(Duration::from_millis(40)).await;
+        managed.flush_and_stop().await;
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "flushed");
+        assert!(managed.finished);
+    }
+
     #[test]
     fn diagnostic_https_has_its_own_deadline_before_xray_shutdown() {
         assert_eq!(diagnostic_http_budget(Duration::ZERO), None);
