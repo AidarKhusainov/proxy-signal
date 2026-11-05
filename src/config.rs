@@ -384,6 +384,9 @@ impl Config {
             }
             let mut scenario_ids = HashSet::new();
             let mut destinations = HashSet::new();
+            // Each independently tested outbound has its own diagnostic inbound.
+            // Requests can share an HTTPS destination without sharing route evidence.
+            let mut independent_destinations = HashSet::new();
             for case in source.scenarios() {
                 if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
                     bail!("invalid or duplicate scenario id");
@@ -398,10 +401,16 @@ impl Config {
                     url.host_str().unwrap_or("").to_owned(),
                     url.port_or_known_default(),
                 );
-                if !destinations.insert(destination.clone()) {
+                if case.independent_outbound {
+                    if !independent_destinations
+                        .insert((case.outbound_tag.clone(), destination.clone()))
+                    {
+                        bail!("duplicate independent outbound destination");
+                    }
+                } else if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
-                if self.endpoints.iter().any(|e| {
+                if !case.independent_outbound && self.endpoints.iter().any(|e| {
                     let Ok(endpoint_url) = validate_https(&e.url) else {
                         return false;
                     };
@@ -536,10 +545,16 @@ impl Config {
                     url.host_str().unwrap_or("").to_owned(),
                     url.port_or_known_default(),
                 );
-                if !destinations.insert(destination.clone()) {
+                if case.independent_outbound {
+                    if !independent_destinations
+                        .insert((case.outbound_tag.clone(), destination.clone()))
+                    {
+                        bail!("duplicate independent outbound destination");
+                    }
+                } else if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
-                if self.endpoints.iter().any(|e| {
+                if !case.independent_outbound && self.endpoints.iter().any(|e| {
                     let Ok(endpoint_url) = validate_https(&e.url) else {
                         return false;
                     };
@@ -751,6 +766,55 @@ mod tests {
         );
         let parsed: Config = serde_yaml::from_str(&dns).unwrap();
         assert!(parsed.validate().is_err());
+    }
+
+    #[test]
+    fn independent_diagnostic_inbounds_can_share_a_verified_https_target() {
+        let yaml = r#"
+version: 1
+interval_seconds: 300
+timeout_seconds: 30
+parallelism: 2
+state_file: /tmp/state.json
+endpoints:
+  - { id: baseline, url: "https://api.ipify.org" }
+sources:
+  - kind: file
+    id: lab
+    path: /tmp/profile.json
+    scenarios:
+      - id: independent
+        url: "https://api.ipify.org"
+        route: proxy
+        outbound_tag: primary
+        independent_outbound: true
+    cdn:
+      - id: cdn
+        endpoint_url: "https://edge.example.org/generate_204"
+        expected_http_status: 204
+        url: "https://api.ipify.org"
+        outbound_tag: fallback
+        independent_outbound: true
+"#;
+        let parsed: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(parsed.validate().is_ok());
+
+        // The same destination is attributable only to a distinct diagnostic
+        // inbound per outbound tag, never by the HTTP response alone.
+        let duplicate = yaml.replace("outbound_tag: fallback", "outbound_tag: primary");
+        assert!(serde_yaml::from_str::<Config>(&duplicate).unwrap().validate().is_err());
+        let ordinary = yaml.replace("        independent_outbound: true\n", "");
+        assert!(serde_yaml::from_str::<Config>(&ordinary).unwrap().validate().is_err());
+        let non_independent_cdn = yaml.replace(
+            "        outbound_tag: fallback\n        independent_outbound: true",
+            "        outbound_tag: fallback",
+        );
+        assert!(
+            serde_yaml::from_str::<Config>(&non_independent_cdn)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
