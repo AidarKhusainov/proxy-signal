@@ -573,6 +573,8 @@ async fn cycle(config: &Config) -> Vec<ResultRow> {
         }
     }
     stamp_cycle(&mut results, cycle_started_at);
+    let coverage = coverage_rows(config, &results);
+    results.extend(coverage);
     results
 }
 
@@ -582,6 +584,103 @@ fn stamp_cycle(results: &mut [ResultRow], cycle_started_at: u64) {
     for (_, observation) in results {
         observation.observed_at = observation.observed_at.min(cycle_started_at);
     }
+}
+
+/// One source-level incident covers a loss of *required observation evidence*.
+/// A confirmed FAILED/DEGRADED VPN still counts as observed behavior, not as
+/// VPN health OK. Original client, leastPing policy, cascade physical hops and
+/// CDN physical transit are intentionally excluded: the engine cannot prove
+/// those claims from this diagnostic inbound.
+fn coverage_rows(config: &Config, rows: &[ResultRow]) -> Vec<ResultRow> {
+    use std::collections::HashMap;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let max_age = config.interval_seconds + config.timeout_seconds;
+    let observed: HashMap<_, _> = rows
+        .iter()
+        .map(|(key, result)| (key.as_str(), result))
+        .collect();
+    let complete = |key: &str| {
+        observed.get(key).is_some_and(|result| {
+            matches!(result.status, Status::Ok | Status::Failed | Status::Degraded)
+                && now
+                    .checked_sub(result.observed_at)
+                    .is_some_and(|age| age <= max_age)
+        })
+    };
+
+    config
+        .sources
+        .iter()
+        .map(|source| {
+            let source_key = format!("source/{}", source.id());
+            let row = match observed.get(source_key.as_str()) {
+                Some(observation)
+                    if observation.status == Status::Failed && complete(&source_key) =>
+                {
+                    // Existing source/ID failures already have their own incident.
+                    // Do not duplicate a known source failure as coverage loss.
+                    Observation::new(Status::Unknown, "source_failure_reported")
+                }
+                Some(observation) if observation.status == Status::Ok && complete(&source_key) => {
+                    let all_covered = source
+                        .expanded()
+                        .iter()
+                        .flat_map(mandatory_keys)
+                        .all(|key| complete(&key));
+                    if all_covered {
+                        Observation::new(Status::Ok, "required_evidence_present")
+                    } else {
+                        Observation::new(Status::Failed, "required_evidence_missing")
+                    }
+                }
+                _ => Observation::new(Status::Failed, "required_source_unobserved"),
+            };
+            (format!("coverage/{}", source.id()), row)
+        })
+        .collect()
+}
+
+/// Derive required keys from configured checks, not operator-specific names
+/// or counts. Never require deeper policy/hop evidence that Xray cannot prove.
+fn mandatory_keys(source: &Source) -> Vec<String> {
+    let id = source.id();
+    let mut keys = vec![format!("profile/{id}")];
+    for case in source.scenarios() {
+        keys.push(format!("scenario/{id}/{}", case.id));
+    }
+    for case in source.balancers() {
+        let prefix = format!("balancer/{id}/{}", case.id);
+        keys.push(format!("{prefix}/config"));
+        keys.push(format!("{prefix}/candidates"));
+        keys.extend(
+            case.candidates
+                .iter()
+                .enumerate()
+                .map(|(index, _)| candidate_key(&prefix, case, index)),
+        );
+    }
+    for case in source.cdn() {
+        let prefix = format!("cdn/{id}/{}", case.id);
+        for part in ["config", "endpoint", "tunnel"] {
+            keys.push(format!("{prefix}/{part}"));
+        }
+    }
+    for case in source.cascades() {
+        let prefix = format!("cascade/{id}/{}", case.id);
+        for part in ["config", "https"] {
+            keys.push(format!("{prefix}/{part}"));
+        }
+    }
+    for case in source.failover() {
+        let prefix = format!("failover/{id}/{}", case.id);
+        for part in ["config", "primary", "backup"] {
+            keys.push(format!("{prefix}/{part}"));
+        }
+    }
+    keys
 }
 
 fn candidate_key(balancer_key: &str, case: &BalancerScenario, index: usize) -> String {
@@ -693,6 +792,78 @@ fn classify(steps: &[TargetResult]) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn required_coverage_alarm_does_not_conflate_vpn_failure_with_missing_evidence() {
+        let config: Config = serde_yaml::from_str(
+            "version: 1\ninterval_seconds: 300\ntimeout_seconds: 45\nparallelism: 1\nstate_file: /tmp/state\nendpoints:\n  - {id: baseline, url: https://api.ipify.org}\nsources:\n  - id: happ\n    kind: https\n    url: https://example.org/sub\n    profiles:\n      - id: one\n        remarks: One\n        scenarios:\n          - {id: vpn, url: https://example.net/, route: proxy, outbound_tag: proxy, independent_outbound: true}\n",
+        )
+        .unwrap();
+        let mut rows = vec![
+            (
+                "source/happ".to_owned(),
+                Observation::new(Status::Ok, "source_loaded"),
+            ),
+            (
+                "profile/happ/one".to_owned(),
+                Observation::new(Status::Ok, "egress_verified"),
+            ),
+        ];
+        let mut state = State::default();
+        for _ in 0..2 {
+            let (key, observation) = coverage_rows(&config, &rows).pop().unwrap();
+            assert_eq!(key, "coverage/happ");
+            assert_eq!(observation.status, Status::Failed);
+            state.observe(&key, observation, true);
+        }
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.pending[0].status, Status::Failed);
+
+        // An UNKNOWN is not a healthy VPN and cannot silence coverage loss.
+        rows.push((
+            "scenario/happ/one/vpn".to_owned(),
+            Observation::new(Status::Unknown, "outbound_probe_unobserved"),
+        ));
+        assert_eq!(coverage_rows(&config, &rows)[0].1.status, Status::Failed);
+
+        // A confirmed request failure is still useful independent evidence:
+        // VPN has its own FAILED incident; coverage can recover without
+        // declaring the VPN healthy or silently turning FAILED into OK.
+        rows.last_mut().unwrap().1 = Observation::new(Status::Failed, "outbound_https_failed");
+        let (key, observation) = coverage_rows(&config, &rows).pop().unwrap();
+        assert_eq!(observation.status, Status::Ok);
+        state.observe(&key, observation, true);
+        assert_eq!(state.pending.len(), 2);
+        assert_eq!(state.pending[1].status, Status::Ok);
+
+        // Client-inbound and other intentionally unprovable semantics do not
+        // produce a permanent incident in the mandatory coverage aggregate.
+        rows.push((
+            "profile/happ/one/client".to_owned(),
+            Observation::new(Status::Unknown, "client_inbound_unverified"),
+        ));
+        assert_eq!(coverage_rows(&config, &rows)[0].1.status, Status::Ok);
+    }
+
+    #[test]
+    fn source_failure_has_its_own_alarm_without_duplicate_coverage_outage() {
+        let config: Config = serde_yaml::from_str(
+            "version: 1\ninterval_seconds: 300\ntimeout_seconds: 45\nparallelism: 1\nstate_file: /tmp/state\nendpoints:\n  - {id: ip, url: https://api.ipify.org}\nsources:\n  - {id: happ, kind: file, path: /tmp/profile.json}\n",
+        )
+        .unwrap();
+        let unavailable = vec![(
+            "source/happ".to_owned(),
+            Observation::new(Status::Failed, "source_unavailable"),
+        )];
+        assert_eq!(coverage_rows(&config, &unavailable)[0].1.status, Status::Unknown);
+        assert_eq!(coverage_rows(&config, &[])[0].1.status, Status::Failed);
+
+        let mut old = Observation::new(Status::Ok, "source_loaded");
+        old.observed_at = 1;
+        let stale = vec![("source/happ".to_owned(), old)];
+        assert_eq!(coverage_rows(&config, &stale)[0].1.status, Status::Failed);
+    }
+
+
 
     #[test]
     fn selected_profiles_have_independent_stable_incidents_across_restart_and_missing_update() {
