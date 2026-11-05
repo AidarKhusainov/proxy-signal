@@ -40,7 +40,8 @@ impl Sender {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(8));
         if let Some(proxy_url) = &config.proxy_url {
-            client = client.proxy(reqwest::Proxy::all(proxy_url).context("telegram_proxy_invalid")?);
+            client =
+                client.proxy(reqwest::Proxy::all(proxy_url).context("telegram_proxy_invalid")?);
         }
         Ok(Self {
             client: client.build()?,
