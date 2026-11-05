@@ -38,7 +38,10 @@ impl Sender {
         let mut client = Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(8));
+            // Good SOCKS handshakes finish in under a second on Hostland.
+            // Bound stalled connects separately from HTTPS response handling.
+            .connect_timeout(Duration::from_secs(6))
+            .timeout(Duration::from_secs(18));
         if let Some(proxy_url) = &config.proxy_url {
             client =
                 client.proxy(reqwest::Proxy::all(proxy_url).context("telegram_proxy_invalid")?);
@@ -55,8 +58,17 @@ impl Sender {
             let Some(notice) = state.pending.first().cloned() else {
                 break;
             };
-            if self.send(&notice).await.is_err() {
-                eprintln!("ProxySignal: telegram_delivery_failed");
+            if let Err(error) = self.send(&notice).await {
+                // Never print Reqwest errors: their URL can contain the bot token.
+                let code = match error.to_string().as_str() {
+                    "telegram_connect" => "connect",
+                    "telegram_timeout" => "timeout",
+                    "telegram_transport" => "transport",
+                    "telegram_http_status" => "http_status",
+                    "telegram_not_accepted" => "api_rejected",
+                    _ => "other",
+                };
+                eprintln!("ProxySignal: telegram_delivery_failed:{code}");
                 break;
             }
             // No await between acknowledgement and persistence: cancellation
@@ -102,7 +114,9 @@ impl Sender {
                     connect_failures += 1;
                     tokio::time::sleep(Duration::from_millis(250 * connect_failures)).await;
                 }
-                Err(_) => bail!("telegram_http"),
+                Err(error) if error.is_connect() => bail!("telegram_connect"),
+                Err(error) if error.is_timeout() => bail!("telegram_timeout"),
+                Err(_) => bail!("telegram_transport"),
             }
         };
         if !response.status().is_success() {
