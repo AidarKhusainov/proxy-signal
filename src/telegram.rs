@@ -62,12 +62,24 @@ impl Sender {
     }
 
     pub async fn send(&self, notice: &Notice) -> Result<()> {
-        let message = match notice.status {
-            Status::Ok => "Восстановлено: OK",
-            Status::Failed => "Подтверждённый сбой: FAILED",
-            Status::Degraded => "Частичная доступность: DEGRADED",
-            Status::Unknown => "Сбой устранён; полная работоспособность не подтверждена: UNKNOWN",
-            Status::Unsupported => return Ok(()),
+        let message = if notice.key.starts_with("coverage/") {
+            match notice.status {
+                Status::Ok => "Покрытие мониторинга восстановлено: OK",
+                Status::Failed => "Недоступны обязательные проверки: FAILED",
+                Status::Degraded => "Часть проверок недоступна: DEGRADED",
+                Status::Unknown => "Достоверность мониторинга не подтверждена: UNKNOWN",
+                Status::Unsupported => return Ok(()),
+            }
+        } else {
+            match notice.status {
+                Status::Ok => "Восстановлено: OK",
+                Status::Failed => "Подтверждённый сбой: FAILED",
+                Status::Degraded => "Частичная доступность: DEGRADED",
+                Status::Unknown => {
+                    "Сбой устранён; полная работоспособность не подтверждена: UNKNOWN"
+                }
+                Status::Unsupported => return Ok(()),
+            }
         };
         let body = serde_json::json!({
             "chat_id": self.chat_id,
@@ -195,6 +207,24 @@ mod tests {
         );
         assert_eq!(state.pending.len(), 2);
         state
+    }
+
+    #[tokio::test]
+    async fn required_coverage_loss_message_does_not_claim_vpn_is_down() {
+        let (sender, server) = local_sender(vec![(200, r#"{"ok":true}"#.to_string())]);
+        sender
+            .send(&Notice {
+                key: "coverage/happ".to_owned(),
+                status: Status::Failed,
+                when: 123,
+            })
+            .await
+            .unwrap();
+        let messages = server.join().unwrap();
+        let text = messages[0]["text"].as_str().unwrap();
+        assert!(text.contains("Недоступны обязательные проверки: FAILED"));
+        assert!(text.contains("coverage/happ"));
+        assert!(!text.contains("Подтверждённый сбой"));
     }
 
     #[tokio::test]
