@@ -372,9 +372,9 @@ pub async fn check(
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
             let route_proxy = proxy.clone();
             spawn_balancer_probe(
@@ -382,7 +382,7 @@ pub async fn check(
                 case_index,
                 None,
                 deadline,
-                async move { probe::probe_https(&url, &route_proxy, remaining).await },
+                async move { probe::probe_https(&url, &route_proxy, request_budget).await },
             );
             for (candidate_index, tag) in case.candidates.iter().enumerate() {
                 let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag)
@@ -390,9 +390,9 @@ pub async fn check(
                     continue;
                 };
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                let Some(request_budget) = diagnostic_http_budget(remaining) else {
                     continue;
-                }
+                };
                 let url = case.url.clone();
                 let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
                 spawn_balancer_probe(
@@ -400,7 +400,7 @@ pub async fn check(
                     case_index,
                     Some(candidate_index),
                     deadline,
-                    async move { probe::probe_https(&url, &candidate_proxy, remaining).await },
+                    async move { probe::probe_https(&url, &candidate_proxy, request_budget).await },
                 );
             }
         }
@@ -421,7 +421,7 @@ pub async fn check(
             cascade_tasks.spawn(async move {
                 (
                     index,
-                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, remaining))
+                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, request_budget))
                         .await
                         .ok(),
                 )
@@ -443,9 +443,9 @@ pub async fn check(
                 continue;
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
             let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
             scenario_tasks.spawn(async move {
@@ -453,7 +453,7 @@ pub async fn check(
                     index,
                     timeout_at(
                         deadline,
-                        probe::probe_https(&url, &candidate_proxy, remaining),
+                        probe::probe_https(&url, &candidate_proxy, request_budget),
                     )
                     .await
                     .ok(),
@@ -471,9 +471,9 @@ pub async fn check(
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
             let route_proxy = if case.independent_outbound {
                 let Some((_, _, candidate_port)) = diagnostics
@@ -810,6 +810,17 @@ pub async fn check(
 
 // Preserve UNKNOWN when an individual request runs out of time, rather than
 // converting a timeout into a confirmed HTTPS failure.
+/// Give the request its own bounded timeout before the supervising Xray
+/// deadline. A hung TLS request can then return a verified negative HTTPS
+/// result with access attribution, rather than racing the whole profile's
+/// deadline and losing the observation altogether. When the remaining budget
+/// is too short, retain UNKNOWN instead of guessing a failure.
+fn diagnostic_http_budget(remaining: Duration) -> Option<Duration> {
+    remaining
+        .checked_sub(Duration::from_secs(3))
+        .filter(|budget| !budget.is_zero())
+}
+
 fn spawn_balancer_probe<F>(
     tasks: &mut JoinSet<(usize, Option<usize>, Option<bool>)>,
     case_index: usize,
@@ -967,6 +978,21 @@ impl Drop for ManagedChild {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_https_has_its_own_deadline_before_xray_shutdown() {
+        assert_eq!(diagnostic_http_budget(Duration::ZERO), None);
+        assert_eq!(diagnostic_http_budget(Duration::from_secs(2)), None);
+        assert_eq!(diagnostic_http_budget(Duration::from_secs(3)), None);
+        assert_eq!(
+            diagnostic_http_budget(Duration::from_secs(45)),
+            Some(Duration::from_secs(42))
+        );
+        assert_eq!(
+            diagnostic_http_budget(Duration::from_secs(5)),
+            Some(Duration::from_secs(2))
+        );
+    }
+
     #[test]
     fn least_ping_without_observation_is_not_assumed_ready() {
         let dynamic = serde_json::json!({
