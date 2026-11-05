@@ -492,9 +492,12 @@ pub async fn check(
             cdn_tasks.spawn(async move {
                 (
                     index,
-                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, remaining))
-                        .await
-                        .ok(),
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&url, &route_proxy, request_budget),
+                    )
+                    .await
+                    .ok(),
                 )
             });
         }
