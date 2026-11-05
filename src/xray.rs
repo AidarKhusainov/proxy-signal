@@ -413,17 +413,20 @@ pub async fn check(
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
             let route_proxy = proxy.clone();
             cascade_tasks.spawn(async move {
                 (
                     index,
-                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, request_budget))
-                        .await
-                        .ok(),
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&url, &route_proxy, request_budget),
+                    )
+                    .await
+                    .ok(),
                 )
             });
         }
