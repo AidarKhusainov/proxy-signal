@@ -640,9 +640,33 @@ impl Config {
             {
                 bail!("invalid Telegram chat ID");
             }
+            if let Some(proxy) = &tg.proxy_url {
+                validate_telegram_proxy(proxy)?;
+            }
         }
         Ok(())
     }
+}
+
+/// Telegram credentials must never be embedded in a proxy URL. SOCKS5h
+/// forwards DNS lookup to the trusted proxy instead of resolving locally.
+fn validate_telegram_proxy(raw: &str) -> Result<()> {
+    if raw.len() > 256 {
+        bail!("Telegram proxy URL too long");
+    }
+    let proxy = Url::parse(raw).context("invalid Telegram proxy URL")?;
+    if proxy.scheme() != "socks5h"
+        || proxy.host_str().is_none()
+        || proxy.port().is_none()
+        || !proxy.username().is_empty()
+        || proxy.password().is_some()
+        || !matches!(proxy.path(), "" | "/")
+        || proxy.query().is_some()
+        || proxy.fragment().is_some()
+    {
+        bail!("Telegram proxy must be socks5h://host:port without credentials or path");
+    }
+    Ok(())
 }
 
 pub fn validate_https(s: &str) -> Result<Url> {
