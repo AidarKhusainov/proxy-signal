@@ -604,10 +604,12 @@ fn coverage_rows(config: &Config, rows: &[ResultRow]) -> Vec<ResultRow> {
         .collect();
     let complete = |key: &str| {
         observed.get(key).is_some_and(|result| {
-            matches!(result.status, Status::Ok | Status::Failed | Status::Degraded)
-                && now
-                    .checked_sub(result.observed_at)
-                    .is_some_and(|age| age <= max_age)
+            matches!(
+                result.status,
+                Status::Ok | Status::Failed | Status::Degraded
+            ) && now
+                .checked_sub(result.observed_at)
+                .is_some_and(|age| age <= max_age)
         })
     };
 
@@ -854,7 +856,10 @@ mod tests {
             "source/happ".to_owned(),
             Observation::new(Status::Failed, "source_unavailable"),
         )];
-        assert_eq!(coverage_rows(&config, &unavailable)[0].1.status, Status::Unknown);
+        assert_eq!(
+            coverage_rows(&config, &unavailable)[0].1.status,
+            Status::Unknown
+        );
         assert_eq!(coverage_rows(&config, &[])[0].1.status, Status::Failed);
 
         let mut old = Observation::new(Status::Ok, "source_loaded");
@@ -862,8 +867,6 @@ mod tests {
         let stale = vec![("source/happ".to_owned(), old)];
         assert_eq!(coverage_rows(&config, &stale)[0].1.status, Status::Failed);
     }
-
-
 
     #[test]
     fn selected_profiles_have_independent_stable_incidents_across_restart_and_missing_update() {
