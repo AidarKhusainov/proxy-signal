@@ -33,12 +33,17 @@ impl Sender {
         {
             bail!("telegram_secret_invalid");
         }
+        // Never inherit host proxy environment, and never fall back to a
+        // direct Telegram connection when the configured SOCKS proxy fails.
+        let mut client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(8));
+        if let Some(proxy_url) = &config.proxy_url {
+            client = client.proxy(reqwest::Proxy::all(proxy_url).context("telegram_proxy_invalid")?);
+        }
         Ok(Self {
-            client: Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(8))
-                .build()?,
+            client: client.build()?,
             url: format!("https://api.telegram.org/bot{token}/sendMessage"),
             chat_id: config.chat_id.clone(),
         })
