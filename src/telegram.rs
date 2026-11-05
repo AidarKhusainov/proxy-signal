@@ -225,30 +225,38 @@ mod tests {
     async fn telegram_socks5h_uses_remote_dns_and_has_no_direct_fallback() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let proxy_address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
         let proxy = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut greeting = [0; 3];
-            stream.read_exact(&mut greeting).unwrap();
-            assert_eq!(greeting, [5, 1, 0]);
-            stream.write_all(&[5, 0]).unwrap();
-            let mut request = [0; 5];
-            stream.read_exact(&mut request).unwrap();
-            assert_eq!(&request[..4], &[5, 1, 0, 3]);
-            let mut address = vec![0; usize::from(request[4]) + 2];
-            stream.read_exact(&mut address).unwrap();
-            assert_eq!(
-                &address[..address.len() - 2],
-                b"api.telegram.org",
-                "DNS must be handled by SOCKS, not by Hostland"
-            );
-            // Simulate the proxy being unable to establish the destination.
-            stream.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(6);
+            for _ in 0..3 {
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(accepted) => break accepted,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing bounded SOCKS retry");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("SOCKS accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut greeting = [0; 3];
+                stream.read_exact(&mut greeting).unwrap();
+                assert_eq!(greeting, [5, 1, 0]);
+                stream.write_all(&[5, 0]).unwrap();
+                let mut request = [0; 5];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(&request[..4], &[5, 1, 0, 3]);
+                let mut address = vec![0; usize::from(request[4]) + 2];
+                stream.read_exact(&mut address).unwrap();
+                assert_eq!(&address[..address.len() - 2], b"api.telegram.org");
+                stream.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+            }
         });
         let dir = tempfile::tempdir().unwrap();
         let token_file = dir.path().join("token");
