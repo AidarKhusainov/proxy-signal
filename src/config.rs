@@ -410,15 +410,17 @@ impl Config {
                 } else if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
-                if !case.independent_outbound && self.endpoints.iter().any(|e| {
-                    let Ok(endpoint_url) = validate_https(&e.url) else {
-                        return false;
-                    };
-                    (
-                        endpoint_url.host_str().unwrap_or("").to_owned(),
-                        endpoint_url.port_or_known_default(),
-                    ) == destination
-                }) {
+                if !case.independent_outbound
+                    && self.endpoints.iter().any(|e| {
+                        let Ok(endpoint_url) = validate_https(&e.url) else {
+                            return false;
+                        };
+                        (
+                            endpoint_url.host_str().unwrap_or("").to_owned(),
+                            endpoint_url.port_or_known_default(),
+                        ) == destination
+                    })
+                {
                     bail!("scenario destination overlaps egress endpoint");
                 }
                 if !valid_tag(&case.outbound_tag) {
@@ -554,15 +556,17 @@ impl Config {
                 } else if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
-                if !case.independent_outbound && self.endpoints.iter().any(|e| {
-                    let Ok(endpoint_url) = validate_https(&e.url) else {
-                        return false;
-                    };
-                    (
-                        endpoint_url.host_str().unwrap_or("").to_owned(),
-                        endpoint_url.port_or_known_default(),
-                    ) == destination
-                }) {
+                if !case.independent_outbound
+                    && self.endpoints.iter().any(|e| {
+                        let Ok(endpoint_url) = validate_https(&e.url) else {
+                            return false;
+                        };
+                        (
+                            endpoint_url.host_str().unwrap_or("").to_owned(),
+                            endpoint_url.port_or_known_default(),
+                        ) == destination
+                    })
+                {
                     bail!("CDN tunnel destination overlaps egress endpoint");
                 }
             }
@@ -802,19 +806,23 @@ sources:
         // The same destination is attributable only to a distinct diagnostic
         // inbound per outbound tag, never by the HTTP response alone.
         let duplicate = yaml.replace("outbound_tag: fallback", "outbound_tag: primary");
-        assert!(serde_yaml::from_str::<Config>(&duplicate).unwrap().validate().is_err());
+        assert!(serde_yaml::from_str::<Config>(&duplicate)
+            .unwrap()
+            .validate()
+            .is_err());
         let ordinary = yaml.replace("        independent_outbound: true\n", "");
-        assert!(serde_yaml::from_str::<Config>(&ordinary).unwrap().validate().is_err());
+        assert!(serde_yaml::from_str::<Config>(&ordinary)
+            .unwrap()
+            .validate()
+            .is_err());
         let non_independent_cdn = yaml.replace(
             "        outbound_tag: fallback\n        independent_outbound: true",
             "        outbound_tag: fallback",
         );
-        assert!(
-            serde_yaml::from_str::<Config>(&non_independent_cdn)
-                .unwrap()
-                .validate()
-                .is_err()
-        );
+        assert!(serde_yaml::from_str::<Config>(&non_independent_cdn)
+            .unwrap()
+            .validate()
+            .is_err());
     }
 
     #[test]
