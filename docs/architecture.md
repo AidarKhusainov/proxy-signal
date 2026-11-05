@@ -85,6 +85,15 @@ configurations.
   Observation keys must never contain outbound tags.
 - Observations include location, version/hash, timestamp, duration, kind, status, bounded failure code and available evidence.
 - Freshness is independent from availability. UNKNOWN/UNSUPPORTED/stale must never silently become OK.
+- Mandatory observation coverage has one additional source-level `coverage/<source-id>` record and incident.
+  When a source loads successfully but a configured profile, independent scenario, balancer candidate,
+  or CDN endpoint/tunnel is missing, stale, UNKNOWN or UNSUPPORTED, the coverage record is FAILED
+  and alerts after comparable consecutive observations. A confirmed individual VPN FAILED/DEGRADED
+  remains its **own** incident and counts as observed evidence, not healthy connectivity.
+  Source HTTP failures retain their existing source incident instead of duplicating coverage alerts.
+  Deliberately unproven leastPing selection, physical cascade/CDN hops and client-inbound semantics
+  are excluded from mandatory evidence. A coverage recovery message means diagnostics resumed,
+  **not** that every VPN route recovered.
 - Incident correlation requires comparable consecutive results for the same scenario; different failures do not merge into a false consecutive outage.
 - If source refresh fails, a cached profile can still be tested with age shown; the refresh failure is a separate incident.
 - Stored configs and credentials are sensitive even when encrypted transport is used. SQLite is a later milestone, not an M0 prerequisite.
