@@ -215,6 +215,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn telegram_socks5h_uses_remote_dns_and_has_no_direct_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut greeting = [0; 3];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).unwrap();
+            let mut request = [0; 5];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request[..4], &[5, 1, 0, 3]);
+            let mut address = vec![0; usize::from(request[4]) + 2];
+            stream.read_exact(&mut address).unwrap();
+            assert_eq!(
+                &address[..address.len() - 2],
+                b"api.telegram.org",
+                "DNS must be handled by SOCKS, not by Hostland"
+            );
+            // Simulate the proxy being unable to establish the destination.
+            stream.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, "123:abc").unwrap();
+        let sender = Sender::new(&Telegram {
+            bot_token_file: token_file,
+            chat_id: "-1".to_owned(),
+            proxy_url: Some(format!("socks5h://{proxy_address}")),
+        })
+        .unwrap();
+        assert!(sender
+            .send(&Notice {
+                key: "profile/test".to_owned(),
+                status: Status::Failed,
+                when: 123,
+            })
+            .await
+            .is_err());
+        proxy.join().unwrap();
+    }
+
+    #[tokio::test]
     async fn required_coverage_loss_message_does_not_claim_vpn_is_down() {
         let (sender, server) = local_sender(vec![(200, r#"{"ok":true}"#.to_string())]);
         sender
