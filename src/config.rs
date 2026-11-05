@@ -275,6 +275,9 @@ impl Source {
 pub struct Telegram {
     pub bot_token_file: PathBuf,
     pub chat_id: String,
+    /// Optional operator-owned SOCKS5 proxy. Remote DNS is mandatory.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 pub fn load(path: &str) -> Result<Config> {
