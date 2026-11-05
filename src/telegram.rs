@@ -221,8 +221,12 @@ mod tests {
         let proxy_address = listener.local_addr().unwrap();
         let proxy = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut greeting = [0; 3];
             stream.read_exact(&mut greeting).unwrap();
             assert_eq!(greeting, [5, 1, 0]);
