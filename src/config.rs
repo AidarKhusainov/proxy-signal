@@ -766,6 +766,21 @@ mod tests {
     }
 
     #[test]
+    fn telegram_proxy_is_explicit_remote_dns_only() {
+        assert!(validate_telegram_proxy("socks5h://xray-proxy:10808").is_ok());
+        for proxy in [
+            "socks5://xray-proxy:10808",
+            "http://xray-proxy:10808",
+            "socks5h://user:pass@xray-proxy:10808",
+            "socks5h://xray-proxy:10808/other",
+            "socks5h://xray-proxy",
+            "socks5h://xray-proxy:10808?test=1",
+        ] {
+            assert!(validate_telegram_proxy(proxy).is_err(), "{proxy}");
+        }
+    }
+
+    #[test]
     fn scenario_configuration_is_optional_and_strict() {
         let yaml = "kind: file\nid: node\npath: /tmp/profile.json\n";
         let old: Source = serde_yaml::from_str(yaml).unwrap();
