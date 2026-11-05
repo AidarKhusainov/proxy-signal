@@ -92,13 +92,19 @@ impl Sender {
             "text": format!("ProxySignal · {message}\n{}\nВремя (Unix): {}", notice.key, notice.when),
             "disable_web_page_preview": true,
         });
-        let response = self
-            .client
-            .post(&self.url)
-            .json(&body)
-            .send()
-            .await
-            .context("telegram_http")?;
+        // Retry only connection establishment failures. A timeout after the
+        // POST may mean Telegram accepted it, so never replay ambiguous sends.
+        let mut connect_failures = 0;
+        let response = loop {
+            match self.client.post(&self.url).json(&body).send().await {
+                Ok(response) => break response,
+                Err(error) if error.is_connect() && connect_failures < 2 => {
+                    connect_failures += 1;
+                    tokio::time::sleep(Duration::from_millis(250 * connect_failures)).await;
+                }
+                Err(_) => bail!("telegram_http"),
+            }
+        };
         if !response.status().is_success() {
             bail!("telegram_http_status");
         }
