@@ -17,6 +17,7 @@ services:
     environment:
       GATUS_OBSERVER_ROLE: ${GATUS_OBSERVER_ROLE:?Set ger1 or fin1}
       GATUS_ALERT_MODE: ${GATUS_ALERT_MODE:?Explicit test or live alert mode}
+      GATUS_RECONCILE_ENABLED: ${GATUS_RECONCILE_ENABLED:-false}
       PYTHONDONTWRITEBYTECODE: "1"
     command: ["python3", "-u", "/app/durable-down.py"]
     volumes:
