@@ -81,7 +81,7 @@ class PanelObserverGatusLive(unittest.TestCase):
 
             try:
                 subprocess.run([
-                    "docker", "run", "-d", "--rm", "--name", name,
+                    "docker", "run", "-d", "--name", name,
                     "--user=65532:65532", "--read-only",
                     "--cap-drop=ALL", "--security-opt=no-new-privileges",
                     "--pids-limit=32", "--memory=128m", "--cpus=0.25",
