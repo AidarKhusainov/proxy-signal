@@ -2,6 +2,21 @@
 
 **Status: PRODUCTION MIGRATION COMPLETED, 2026-11-03.** Both old Kuma containers and DOWN-only adapters were stopped and removed, with Docker volumes left intact. Gatus is actively monitoring on both nodes. No public ports were introduced; RemnaNode, Hostland ProxySignal and the original Remnawave monitoring were preserved.
 
+## Independent public CDN canaries (#159)
+
+The existing **fin1** Gatus generator adds two independent HTTPS checks in the `observer` group. No additional container or public listener is needed.
+
+| Gatus endpoint key | Public URL | Result contract |
+| --- | --- | --- |
+| `observer_cdn-xray-public` | `https://cdn-swe1.censor-amoroso.com/generate_204` | Exact HTTP 204 |
+| `observer_cdn-subscriptions-public` | `https://sub.censor-amoroso.com/generate_204` | Exact HTTP 204 |
+
+Each is a five-minute GET with a 10-second timeout, valid hostname/TLS required and redirects disabled. HTTP 200, 3xx, DNS/TLS failure and timeouts are failures. Independent Telegram incidents are armed only with `render-config.py --role fin1 ... --enable-alerts`, after two consecutive failed results; one successful result resolves the incident silently (`send-on-resolved: false`). Normal successes and repeat failures produce no extra notification. The existing `observer_hostland-https` and ger1 heartbeat remain independent.
+
+Render the config using existing protected file-backed Telegram credentials. Deploy only after read-only runtime inspection, immutable-source review, saved original config/renderer, Gatus-only restart and verified fresh results; recover from the protected pre-deployment snapshot if acceptance fails. The Gatus API/SQLite must be inspected after restart: a previously stored success is not a fresh successful observation. No separate CDN monitoring stack, public port or provider mutation is required.
+
+These public `/generate_204` checks do **not** establish VLESS/XHTTP tunnel operation, successful authenticated subscription issuance or Russian ISP reachability. The previous `public-edge-availability.yml` schedule in `remnawave-infra` remains enabled until the coordinated final cutover in #158.
+
 Verified evidence:
 
 - [Read-only production preflight](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/41610412123)
