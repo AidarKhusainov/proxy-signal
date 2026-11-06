@@ -64,7 +64,7 @@ class PanelObserverContract(unittest.TestCase):
         )
         self.assertIn("name: fast-panel", config)
         self.assertIn("description: ProxySignal", config)
-        section = config.split("  - name: fast-panel\\n", 1)[1].split("\\n  - name:", 1)[0]
+        section = config.split("  - name: fast-panel\n", 1)[1].split("\n  - name:", 1)[0]
         self.assertNotIn("    alerts:", section)
         self.assertEqual(config.count("    alerts:"), 1)
 
