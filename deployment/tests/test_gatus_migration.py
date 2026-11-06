@@ -136,13 +136,13 @@ class ReceiverTests(TestCase):
             ("heartbeat coverage=ok", [receiver.PUSH_URL, receiver.COVERAGE_OK_URL]),
             ("heartbeat coverage=fail", [receiver.PUSH_URL, receiver.COVERAGE_FAIL_URL]),
         ):
-            with mock.patch.dict("os.environ", {"SSH_ORIGINAL_COMMAND": command}, clear=True), \\
-                 mock.patch.object(receiver.Path, "read_text", return_value="validtoken123"), \\
+            with mock.patch.dict("os.environ", {"SSH_ORIGINAL_COMMAND": command}, clear=True), \
+                 mock.patch.object(receiver.Path, "read_text", return_value="validtoken123"), \
                  mock.patch.object(receiver, "send") as send:
                 self.assertEqual(receiver.main(), 0)
                 self.assertEqual([call.args[1] if len(call.args) > 1 else receiver.PUSH_URL
                                   for call in send.call_args_list], urls)
-        with mock.patch.dict("os.environ", {"SSH_ORIGINAL_COMMAND": "heartbeat coverage=ok; id"}, clear=True), \\
+        with mock.patch.dict("os.environ", {"SSH_ORIGINAL_COMMAND": "heartbeat coverage=ok; id"}, clear=True), \
              mock.patch.object(receiver, "send") as send:
             self.assertEqual(receiver.main(), 1)
             send.assert_not_called()
