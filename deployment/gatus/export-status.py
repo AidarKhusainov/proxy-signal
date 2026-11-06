@@ -13,12 +13,20 @@ import urllib.request
 
 ADDRESS = "http://127.0.0.1:3002/api/v1/endpoints/statuses"
 MAX_BODY = 512 * 1024
+PANEL_FAST = (
+    "panel", "auth", "caddy", "remnawave", "postgres", "redis",
+    "subscription_page", "xray_proxy", "backupable", "node_metrics",
+    "node_swe1", "node_msc1", "node_fin1", "node_nyc1", "node_ger1",
+    "subscription", "fast_tick",
+)
+PANEL_AUDIT = ("host_state", "firewall", "backupable_desired", "audit_tick")
 KEYS = {
     "ger1": frozenset({
         "observer_proxysignal-heartbeat",
         "observer_proxysignal-required-coverage",
         "observer_hostland-https-secondary",
-    }),
+    } | {"panel_fast-" + name.replace("_", "-") for name in PANEL_FAST}
+      | {"panel_audit-" + name.replace("_", "-") for name in PANEL_AUDIT}),
     "fin1": frozenset({
         "observer_hostland-https",
         "observer_cdn-xray-public",
