@@ -35,6 +35,8 @@ jobs:
         run: python3 -m unittest discover -s deployment/tests -p 'test_*.py' -v
       - name: Isolated pinned-Gatus HTTP/DNS/TLS and incident regression
         run: GATUS_LIVE_FIXTURES=1 python3 deployment/tests/test_gatus_cdn_live.py -v
+      - name: Isolated pinned-Gatus panel status and silence regression
+        run: GATUS_LIVE_FIXTURES=1 python3 deployment/tests/test_panel_observer_live.py -v
       - name: Validate parallel Compose syntax
         run: |
           PROXYSIGNAL_IMAGE="ghcr.io/example/proxy-signal@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" docker compose -f deployment/compose.yaml config --quiet

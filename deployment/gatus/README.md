@@ -2,6 +2,20 @@
 
 **Status: PRODUCTION MIGRATION COMPLETED, 2026-11-03.** Both old Kuma containers and DOWN-only adapters were stopped and removed, with Docker volumes left intact. Gatus is actively monitoring on both nodes. No public ports were introduced; RemnaNode, Hostland ProxySignal and the original Remnawave monitoring were preserved.
 
+## Autonomous Hostland Panel and infrastructure reports (#160)
+
+The existing **ger1** Gatus supports the production-specific collector in [remnawave-infra #160](https://github.com/AidarKhusainov/remnawave-infra/issues/160). No Panel/Backupable infrastructure contract is added to the generic ProxySignal Rust engine.
+
+When explicitly rendered with `--role ger1 --panel-monitor --enable-alerts`, the generator adds **17 five-minute** external `panel_fast-*` results (Panel/Auth/Caddy and eight critical component-related checks, protected metrics, five pinned nodes, actual active subscription and worker tick) and **four three-hour** `panel_audit-*` results (host, firewall, Backupable desired state and audit tick). Gatus accepts complete reports sent by the existing restricted SSH `kuma-push` identity. The receiver rejects unexpected commands, missing/duplicate checks and incorrect worker ticks. Each endpoint uses a derived independent HMAC bearer token held only by ger1; the Hostland collector never receives a Gatus secret. Gatus remains bound to `127.0.0.1:3002`, without a new public API, socket or remote shell.
+
+The `--panel-monitor` flag creates endpoints **without new Telegram alerts**. After guarded real runtime acceptance, `--panel-alerts` independently enables DOWN-only Telegram for these endpoints; other pre-existing alerts are unchanged. A fast component needs two failed reports; worker ticks and three-hour desired-state results alert on the first failed/missing observation. Each endpoint retains its own incident. A correctly delivered `FAILED` means a service is unhealthy, **not** that the worker stopped; a missed tick is separate evidence of silence. A successful HTTP 200 for Panel or CDN is not proof of internal component, authenticated subscription or VPN health.
+
+The collector, expected Remnawave node UUIDs, protected database query, Caddy/Auth verification, infrastructure checks and systemd timer ownership belong exclusively to **remnawave-infra**. The pinned UUID baseline is never auto-reconciled. Ansible remains the manual infrastructure diagnostics interface. Backupable desired state does not establish backup freshness/restorability. Total loss of ger1 Gatus itself needs the separate cross-observer coverage owned by #161.
+
+The old `panel-active-state.yml` schedule remains enabled through the coordinated #158 cutover. Deploy/rollback only through the scoped, source-SHA-reviewed production procedure in the infrastructure repository; retain its private original Gatus renderer/receiver/config backup. Never replace an operating monitoring configuration based solely on generated YAML or mock tests.
+
+**Issue #160 runtime acceptance:** [remnawave-infra Actions 42200197275](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/42200197275) verified the existing ger1 Gatus with 21 external Panel/audit results, two real Hostland fast cycles and one audit, actual isolated Telegram TEST acknowledgement, persistence across a Gatus-only restart, and unchanged non-monitoring containers. Measured Gatus cgroup resource usage: 0.02% CPU, 8.348 MiB / 128 MiB RAM, six PID. The original Gatus renderer/receiver/config and Hostland rollout journal remain in protected local backup. No legacy scheduled checks were disabled.
+
 ## Independent public CDN canaries (#159)
 
 The existing **fin1** Gatus generator adds two independent HTTPS checks in the `observer` group. No additional container or public listener is needed.
