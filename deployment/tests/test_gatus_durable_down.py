@@ -158,6 +158,27 @@ class DurableDownTests(unittest.TestCase):
         relay.reconcile_results(self.db, "fin1", data, now)
         self.assertEqual(self.count("SELECT COUNT(*) FROM outbox"), 2)
 
+    def test_reconcile_rejects_old_ok_and_out_of_order_histories(self):
+        from datetime import datetime, timezone
+        now = 1794000000
+        def point(delta, ok):
+            return {"timestamp": datetime.fromtimestamp(now + delta, timezone.utc)
+                    .isoformat().replace("+00:00", "Z"), "success": ok}
+        relay.accept_event(self.db, "ger1", {
+            "state": "TRIGGERED", "group": "observer",
+            "name": "proxysignal-heartbeat",
+        }, now=now - 400)
+        key = "observer_proxysignal-heartbeat"
+        for entry in ([], [{"key": key, "results": []}],
+                      [{"key": key, "results": [point(-2000, True)]}]):
+            relay.reconcile_results(self.db, "ger1", entry, now)
+            self.assertEqual(self.count("SELECT active FROM targets"), 1)
+        with self.assertRaises(ValueError):
+            relay.reconcile_results(self.db, "ger1",
+                                    [{"key": key, "results":
+                                      [point(-10, True), point(-20, False)]}], now)
+        self.assertEqual(self.count("SELECT active FROM targets"), 1)
+
     def test_panel_160_keys_are_explicitly_allowlisted(self):
         relay.accept_event(self.db, "ger1",
             event(group="panel", name="fast-node-swe1"), now=123)
