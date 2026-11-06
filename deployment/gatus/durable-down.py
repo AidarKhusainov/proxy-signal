@@ -246,7 +246,14 @@ def reconcile_results(db, role, statuses, now):
                 streak += 1
             else:
                 break
+        current = db.execute("SELECT active FROM targets WHERE key=?", (key,)).fetchone()
+        # Avoid reopening a delivered event while the Gatus alert is disarmed,
+        # and avoid a high-frequency SQLite write on every 15s poll.
+        if current is not None and bool(current[0]) != (not success):
+            continue
         if success:
+            if current is None:  # Healthy on first sight never needs a row.
+                continue
             accept_event(db, role, {
                 "state": "RESOLVED",
                 "group": key.split("_", 1)[0],
@@ -314,11 +321,12 @@ def worker(role, stop, path=DB):
     while not stop.wait(RETRY_SECONDS):
         try:
             with closing(connect(path)) as db:
-                try:
-                    reconcile(db, role)
-                except (OSError, ValueError, TypeError, KeyError,
-                        json.JSONDecodeError, urllib.error.URLError):
-                    print("Gatus relay: state reconciliation unavailable", file=sys.stderr)
+                if os.environ.get("GATUS_RECONCILE_ENABLED") == "true":
+                    try:
+                        reconcile(db, role)
+                    except (OSError, ValueError, TypeError, KeyError,
+                            json.JSONDecodeError, urllib.error.URLError):
+                        print("Gatus relay: state reconciliation unavailable", file=sys.stderr)
                 send_one(db, role)
         except (sqlite3.Error, OSError, ValueError):
             print("Gatus relay: queue delivery unavailable", file=sys.stderr)
@@ -330,6 +338,8 @@ def main():
         raise ValueError("invalid observer role")
     if os.environ.get("GATUS_ALERT_MODE") not in ("live", "test"):
         raise ValueError("missing explicit alert mode")
+    if os.environ.get("GATUS_RECONCILE_ENABLED") not in ("true", "false"):
+        raise ValueError("missing explicit reconciliation mode")
     secret(WEBHOOK_FILE, r"[A-Za-z0-9_-]{32,128}")
     with closing(connect()) as db:
         db.execute("SELECT 1")
