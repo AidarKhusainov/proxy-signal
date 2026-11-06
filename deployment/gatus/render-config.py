@@ -20,7 +20,10 @@ def read_secret(path, pattern):
     return value
 
 
-def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False):
+def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False,
+           durable_alerts=False, webhook_key=None):
+    if durable_alerts and (not enable_alerts or not webhook_key):
+        raise ValueError("durable notifier requires armed alerts and webhook key")
     quote = json.dumps  # JSON quoted strings are valid YAML scalars.
     header = f"""storage:
   type: sqlite
@@ -35,6 +38,16 @@ alerting:
     token: {quote(telegram_token)}
     id: {quote(chat_id)}
 """
+    if durable_alerts:
+        header += f"""  custom:
+    url: http://durable-down:8080/event
+    method: POST
+    headers:
+      X-Observer-Webhook-Key: {quote(webhook_key)}
+    body: '{{"state":"[ALERT_TRIGGERED_OR_RESOLVED]","group":"[ENDPOINT_GROUP]","name":"[ENDPOINT_NAME]"}}'
+"""
+    alert_type = "custom" if durable_alerts else "telegram"
+    resolved = "true" if durable_alerts else "false"  # Internal rearm only; Telegram DOWN-only.
     if role == "ger1":
         if not push_token:
             raise ValueError("missing ger1 push token")
@@ -45,11 +58,11 @@ alerting:
     heartbeat:
       interval: 10m
 """
-        external_alert = """    alerts:
-      - type: telegram
+        external_alert = f"""    alerts:
+      - type: {alert_type}
         failure-threshold: 1
         success-threshold: 1
-        send-on-resolved: false
+        send-on-resolved: {resolved}
         description: ProxySignal не обновляет результаты проверок (ger1)
 """
         coverage = f"""  - name: proxysignal-required-coverage
@@ -58,11 +71,11 @@ alerting:
     heartbeat:
       interval: 10m
 """
-        coverage_alert = """    alerts:
-      - type: telegram
+        coverage_alert = f"""    alerts:
+      - type: {alert_type}
         failure-threshold: 2
         success-threshold: 1
-        send-on-resolved: false
+        send-on-resolved: {resolved}
         description: Нет свежего подтверждения обязательных проверок ProxySignal (ger1)
 """
         ordinary = """endpoints:
@@ -90,11 +103,11 @@ alerting:
     conditions:
       - '[STATUS] == 200'
 """
-        ordinary_alert = """    alerts:
-      - type: telegram
+        ordinary_alert = f"""    alerts:
+      - type: {alert_type}
         failure-threshold: 2
         success-threshold: 1
-        send-on-resolved: false
+        send-on-resolved: {resolved}
         description: Hostland HTTPS недоступен (fin1)
 """
         rendered = header + ordinary + (ordinary_alert if enable_alerts else "")
@@ -117,10 +130,10 @@ alerting:
 """
             if enable_alerts:
                 rendered += f"""    alerts:
-      - type: telegram
+      - type: {alert_type}
         failure-threshold: 2
         success-threshold: 1
-        send-on-resolved: false
+        send-on-resolved: {resolved}
         description: {quote(description)}
 """
         return rendered
@@ -133,6 +146,8 @@ def main():
     parser.add_argument("--private-dir", required=True, type=Path)
     parser.add_argument("--push-token-file", type=Path)
     parser.add_argument("--enable-alerts", action="store_true")
+    parser.add_argument("--durable-alerts", action="store_true",
+                        help="Use existing Gatus custom provider via private durable DOWN-only relay")
     args = parser.parse_args()
     directory = args.private_dir
     if directory.is_symlink() or not directory.is_dir() or directory.stat().st_mode & 0o077:
@@ -143,7 +158,12 @@ def main():
         read_secret(args.push_token_file, r"[A-Za-z0-9_-]{8,128}")
         if args.role == "ger1" and args.push_token_file else None
     )
-    content = render(args.role, telegram_token, chat_id, push_token, args.enable_alerts)
+    webhook_key = (
+        read_secret(directory / "webhook-key", r"[A-Za-z0-9_-]{32,128}")
+        if args.durable_alerts else None
+    )
+    content = render(args.role, telegram_token, chat_id, push_token,
+                     args.enable_alerts, args.durable_alerts, webhook_key)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as stream:
         temporary = Path(stream.name)
         stream.write(content)
