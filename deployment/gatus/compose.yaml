@@ -26,33 +26,3 @@ services:
         max-size: "5m"
         max-file: "2"
 
-  durable-down:
-    profiles: ["durable-alerts"]
-    image: ${GATUS_NOTIFIER_IMAGE:-docker.io/library/python@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff}
-    pull_policy: never
-    restart: unless-stopped
-    init: true
-    user: "65532:65532"
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 32
-    mem_limit: 64m
-    memswap_limit: 64m
-    cpus: 0.1
-    environment:
-      GATUS_OBSERVER_ROLE: ${GATUS_OBSERVER_ROLE:-invalid}
-      GATUS_ALERT_MODE: ${GATUS_ALERT_MODE:-test}
-      PYTHONDONTWRITEBYTECODE: "1"
-    command: ["python3", "-u", "/app/durable-down.py"]
-    volumes:
-      - ./durable-down.py:/app/durable-down.py:ro
-      - ./private/alerts-data:/data
-      - ./private/telegram-token:/run/secrets/telegram-token:ro
-      - ./private/telegram-chat-id:/run/secrets/telegram-chat-id:ro
-      - ./private/webhook-key:/run/secrets/webhook-key:ro
-    logging:
-      driver: local
-      options:
-        max-size: "5m"
-        max-file: "2"
