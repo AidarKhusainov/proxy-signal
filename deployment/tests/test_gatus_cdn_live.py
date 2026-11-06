@@ -88,7 +88,6 @@ def endpoint(name, url, alert=False):
       - type: custom
         failure-threshold: 2
         success-threshold: 1
-        minimum-reminder-interval: 0
         send-on-resolved: false
         description: TEST only
 """
