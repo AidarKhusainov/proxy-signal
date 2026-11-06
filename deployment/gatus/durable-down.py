@@ -153,7 +153,7 @@ def send_telegram(role, key, created_at, active, opener=None):
     client = opener if opener is not None else urllib.request.build_opener(
         urllib.request.ProxyHandler({}), NoRedirect,
     )
-    with client.open(request, timeout=12) as response:
+    with client.open(request, timeout=25) as response:
         if response.status != 200:
             raise ValueError("Telegram HTTP response not accepted")
         data = response.read(4097)
