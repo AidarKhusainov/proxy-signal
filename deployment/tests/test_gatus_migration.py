@@ -95,6 +95,28 @@ class GatusConfigTests(TestCase):
             "fin1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", enable_alerts=True
         ))
 
+    def test_private_russian_durable_alert_contract(self):
+        key = "X" * 48
+        for role in ("ger1", "fin1"):
+            config = render.render(
+                role, "123456:ABCDEFGHIJKLMNOPQRST", "-123",
+                "validpush123" if role == "ger1" else None,
+                enable_alerts=True, durable_alerts=True, webhook_key=key,
+            )
+            self.assertIn("url: http://durable-down:8080/event", config)
+            self.assertIn("type: custom", config)
+            self.assertIn("send-on-resolved: true", config)
+            self.assertNotIn("type: telegram", config)
+            self.assertIn("X-Observer-Webhook-Key: " + chr(34) + key + chr(34), config)
+            self.assertIn("[ALERT_TRIGGERED_OR_RESOLVED]", config)
+            self.assertIn("[ENDPOINT_GROUP]", config)
+            self.assertIn("[ENDPOINT_NAME]", config)
+        with self.assertRaises(ValueError):
+            render.render("fin1", "token", "chat", durable_alerts=True, webhook_key=key)
+        with self.assertRaises(ValueError):
+            render.render("fin1", "token", "chat", enable_alerts=True,
+                          durable_alerts=True)
+
     def test_cdn_checks_are_fin1_only(self):
         ger1 = render.render(
             "ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", "validpush123",
