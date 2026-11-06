@@ -30,7 +30,7 @@ class PanelObserverContract(unittest.TestCase):
     def test_rendered_external_endpoints_independent_and_stale_aware(self):
         config = renderer.render(
             "ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", self.MASTER,
-            enable_alerts=True, panel_monitor=True,
+            enable_alerts=True, panel_monitor=True, panel_alerts=True,
         )
         self.assertEqual(config.count("external-endpoints:"), 1)
         self.assertEqual(config.count("endpoints:"), 2)
@@ -56,6 +56,17 @@ class PanelObserverContract(unittest.TestCase):
             "ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", self.MASTER,
             enable_alerts=True,
         ))
+
+    def test_new_alerts_can_stage_safely_without_silencing_existing_heartbeat(self):
+        config = renderer.render(
+            "ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", self.MASTER,
+            enable_alerts=True, panel_monitor=True,
+        )
+        self.assertIn("name: fast-panel", config)
+        self.assertIn("description: ProxySignal", config)
+        section = config.split("  - name: fast-panel\\n", 1)[1].split("\\n  - name:", 1)[0]
+        self.assertNotIn("    alerts:", section)
+        self.assertEqual(config.count("    alerts:"), 1)
 
     def test_complete_status_report_and_failures_not_scheduler_failures(self):
         command = self.report("fast", {"postgres", "node_fin1"})
