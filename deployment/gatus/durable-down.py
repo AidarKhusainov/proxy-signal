@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local-only Gatus incident relay: durable Russian DOWN, silent resolved, no public port."""
 import hmac
+from datetime import datetime, timezone
 from contextlib import closing
 import json
 import os
@@ -21,6 +22,8 @@ WEBHOOK_FILE = Path("/run/secrets/webhook-key")
 MAX_EVENT = 2048
 MAX_QUEUE = 1024
 RETRY_SECONDS = 15
+GATUS_STATUSES = "http://gatus:8080/api/v1/endpoints/statuses?page=1&pageSize=4"
+MAX_GATUS_BODY = 256 * 1024
 OBSERVERS = {
     "ger1": {
         "observer_proxysignal-heartbeat": "Нет свежего heartbeat от ProxySignal",
@@ -180,6 +183,97 @@ def send_one(db, role, sender=send_telegram):
     return True
 
 
+def evidence_threshold(key):
+    if key == "observer_proxysignal-heartbeat":
+        return 1
+    if key in ("observer_proxysignal-required-coverage", "observer_hostland-https",
+               "observer_cdn-xray-public", "observer_cdn-subscriptions-public"):
+        return 2
+    if key.startswith("panel_fast-"):
+        return 1 if key == "panel_fast-fast-tick" else 2
+    if key.startswith("panel_audit-"):
+        return 1
+    return 0  # Informational secondary Panel check has no alert.
+
+
+def reconcile_results(db, role, statuses, now):
+    """Recover dropped webhook transitions from pinned-Gatus persisted results.
+
+    Only recent, allowlisted results count. Gatus errors/URLs are never logged
+    or persisted. No HTTP success alone proves VPN connectivity.
+    """
+    if not isinstance(statuses, list) or len(statuses) > 64:
+        raise ValueError("invalid Gatus result list")
+    expected = labels(role)
+    seen = set()
+    for endpoint in statuses:
+        if not isinstance(endpoint, dict):
+            raise ValueError("invalid Gatus endpoint")
+        key = endpoint.get("key")
+        if key not in expected:
+            continue
+        if key in seen:
+            raise ValueError("duplicate Gatus endpoint")
+        seen.add(key)
+        threshold = evidence_threshold(key)
+        if not threshold:
+            continue
+        results = endpoint.get("results")
+        if not isinstance(results, list) or not 1 <= len(results) <= 4:
+            continue
+        recent = []
+        for result in results:
+            if not isinstance(result, dict) or type(result.get("success")) is not bool:
+                raise ValueError("invalid Gatus success field")
+            stamp = result.get("timestamp")
+            if not isinstance(stamp, str) or not stamp.endswith("Z"):
+                raise ValueError("invalid Gatus timestamp")
+            observed_at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+            if observed_at < 0 or observed_at > now + 30:
+                raise ValueError("future Gatus result")
+            recent.append((observed_at, result["success"]))
+        # Non-monotonic/malformed history is ambiguous, never report healthy.
+        if any(a[0] > b[0] for a, b in zip(recent, recent[1:])):
+            raise ValueError("out-of-order Gatus results")
+        observed_at = recent[-1][0]
+        max_age = 5 * 3600 if key.startswith("panel_audit-") else 1500
+        if now - observed_at > max_age:
+            continue
+        success = recent[-1][1]
+        streak = 0
+        for _, value in reversed(recent):
+            if value == success:
+                streak += 1
+            else:
+                break
+        if success:
+            accept_event(db, role, {
+                "state": "RESOLVED",
+                "group": key.split("_", 1)[0],
+                "name": key.split("_", 1)[1],
+            }, int(now))
+        elif streak >= threshold:
+            accept_event(db, role, {
+                "state": "TRIGGERED",
+                "group": key.split("_", 1)[0],
+                "name": key.split("_", 1)[1],
+            }, int(now))
+
+
+def reconcile(db, role, now=None, opener=None):
+    now = time.time() if now is None else now
+    client = opener if opener is not None else urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), NoRedirect,
+    )
+    with client.open(urllib.request.Request(GATUS_STATUSES, method="GET"), timeout=5) as response:
+        if response.status != 200:
+            raise ValueError("Gatus status API unavailable")
+        data = response.read(MAX_GATUS_BODY + 1)
+        if len(data) > MAX_GATUS_BODY:
+            raise ValueError("Gatus response too large")
+    reconcile_results(db, role, json.loads(data), now)
+
+
 class Handler(BaseHTTPRequestHandler):
     role = None
     database = DB
@@ -220,6 +314,11 @@ def worker(role, stop, path=DB):
     while not stop.wait(RETRY_SECONDS):
         try:
             with closing(connect(path)) as db:
+                try:
+                    reconcile(db, role)
+                except (OSError, ValueError, TypeError, KeyError,
+                        json.JSONDecodeError, urllib.error.URLError):
+                    print("Gatus relay: state reconciliation unavailable", file=sys.stderr)
                 send_one(db, role)
         except (sqlite3.Error, OSError, ValueError):
             print("Gatus relay: queue delivery unavailable", file=sys.stderr)
