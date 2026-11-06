@@ -83,15 +83,15 @@ class PanelObserverContract(unittest.TestCase):
 
     def test_existing_proxy_heartbeat_preserved(self):
         self.assertIn("proxysignal-heartbeat", receiver.PUSH_URL)
-        with patch.dict(receiver.os.environ, {"SSH_ORIGINAL_COMMAND": "heartbeat"}, clear=True), \\
-                patch.object(receiver.Path, "read_text", return_value=self.MASTER), \\
+        with patch.dict(receiver.os.environ, {"SSH_ORIGINAL_COMMAND": "heartbeat"}, clear=True), \
+                patch.object(receiver.Path, "read_text", return_value=self.MASTER), \
                 patch.object(receiver, "send") as send:
             self.assertEqual(receiver.main(), 0)
             send.assert_called_once_with(self.MASTER)
 
     def test_failure_is_forwarded_but_no_untrusted_urls(self):
-        with patch.dict(receiver.os.environ, {"SSH_ORIGINAL_COMMAND": self.report("fast", {"auth"})}, clear=True), \\
-                patch.object(receiver.Path, "read_text", return_value=self.MASTER), \\
+        with patch.dict(receiver.os.environ, {"SSH_ORIGINAL_COMMAND": self.report("fast", {"auth"})}, clear=True), \
+                patch.object(receiver.Path, "read_text", return_value=self.MASTER), \
                 patch.object(receiver, "send") as send:
             self.assertEqual(receiver.main(), 0)
         self.assertEqual(send.call_count, len(receiver.PANEL_FAST))
@@ -101,8 +101,8 @@ class PanelObserverContract(unittest.TestCase):
         self.assertTrue(all(url.startswith(receiver.PANEL_URL) for url in calls))
 
     def test_invalid_report_sends_nothing(self):
-        with patch.dict(receiver.os.environ, {"SSH_ORIGINAL_COMMAND": "panel-report-v1 fast panel=1"}, clear=True), \\
-                patch.object(receiver.Path, "read_text") as secret, \\
+        with patch.dict(receiver.os.environ, {"SSH_ORIGINAL_COMMAND": "panel-report-v1 fast panel=1"}, clear=True), \
+                patch.object(receiver.Path, "read_text") as secret, \
                 patch.object(receiver, "send") as send:
             self.assertEqual(receiver.main(), 1)
         secret.assert_not_called()
