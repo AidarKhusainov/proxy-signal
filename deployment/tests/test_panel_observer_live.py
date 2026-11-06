@@ -66,7 +66,7 @@ class PanelObserverGatusLive(unittest.TestCase):
             def statuses():
                 with opener.open(host + "/api/v1/endpoints/statuses", timeout=2) as response:
                     self.assertEqual(response.status, 200)
-                    return {entry["name"]: entry for entry in json.load(response)}
+                    return {entry["key"]: entry for entry in json.load(response)}
 
             def post(group, target, ok, token=None):
                 token = token or render.panel_token(master, group, target)
