@@ -25,7 +25,7 @@ def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False):
     header = f"""storage:
   type: sqlite
   path: /data/gatus.db
-  maximum-number-of-results: 100
+  maximum-number-of-results: 360
   maximum-number-of-events: 50
 web:
   address: 0.0.0.0
@@ -52,6 +52,19 @@ alerting:
         send-on-resolved: false
         description: ProxySignal не обновляет результаты проверок (ger1)
 """
+        coverage = f"""  - name: proxysignal-required-coverage
+    group: observer
+    token: {quote(push_token)}
+    heartbeat:
+      interval: 10m
+"""
+        coverage_alert = """    alerts:
+      - type: telegram
+        failure-threshold: 2
+        success-threshold: 1
+        send-on-resolved: false
+        description: Нет свежего подтверждения обязательных проверок ProxySignal (ger1)
+"""
         ordinary = """endpoints:
   - name: hostland-https-secondary
     group: observer
@@ -63,7 +76,8 @@ alerting:
     conditions:
       - '[STATUS] == 200'
 """
-        return header + external + (external_alert if enable_alerts else "") + ordinary
+        return (header + external + (external_alert if enable_alerts else "")
+                + coverage + (coverage_alert if enable_alerts else "") + ordinary)
     if role == "fin1":
         ordinary = """endpoints:
   - name: hostland-https
