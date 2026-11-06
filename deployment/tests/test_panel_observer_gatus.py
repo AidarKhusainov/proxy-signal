@@ -108,7 +108,7 @@ class PanelObserverContract(unittest.TestCase):
         self.assertEqual(send.call_count, len(receiver.PANEL_FAST))
         calls = {call.kwargs["url"]: call.kwargs for call in send.call_args_list}
         self.assertIn(receiver.PANEL_URL + "fast-auth/external?success=false", calls)
-        self.assertIn(receiver.PANEL_URL + "fast-fast_tick/external?success=true", calls)
+        self.assertIn(receiver.PANEL_URL + "fast-fast-tick/external?success=true", calls)
         self.assertTrue(all(url.startswith(receiver.PANEL_URL) for url in calls))
 
     def test_invalid_report_sends_nothing(self):
