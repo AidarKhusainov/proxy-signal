@@ -46,7 +46,7 @@ class PanelObserverContract(unittest.TestCase):
                 self.assertEqual(token, receiver.panel_token(self.MASTER, group, name))
                 self.assertIn(f'token: "{token}"', section)
                 self.assertIn(f"interval: {interval}", section)
-                self.assertIn("failure-threshold: " + ("2" if group == "fast" else "1"), section)
+                self.assertIn("failure-threshold: " + ("2" if group == "fast" and not name.endswith("_tick") else "1"), section)
                 self.assertIn("send-on-resolved: false", section)
         self.assertNotIn(self.MASTER, config.split("  - name: fast-panel", 1)[1])
         self.assertNotIn("panel-fast", renderer.render(
