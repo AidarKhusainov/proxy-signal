@@ -148,12 +148,19 @@ sources:
   - id: balancers
     kind: file
     path: /profiles/balancers.json
+    scenarios:
+      - id: independent-healthy
+        url: https://example.org/
+        route: direct
+        outbound_tag: node-good
+        independent_outbound: true
     balancers:
       - id: latency
         url: https://example.com/
         balancer_tag: pool
         strategy: leastPing
         candidates: [node-good, node-broken]
+        candidate_ids: {node-good: good, node-broken: broken}
         fallback_tag: node-good
 YAML
 cat > "$tmp/balancers.json" <<'JSON'
@@ -197,8 +204,9 @@ if [ "$result" -eq 0 ]; then
 fi
 for evidence in \
     'target=balancer/balancers/latency/config status=OK evidence=balancer_config_valid' \
-    'target=balancer/balancers/latency/candidate/0 status=OK evidence=candidate_https_verified' \
-    'target=balancer/balancers/latency/candidate/1 status=FAILED evidence=candidate_https_failed' \
+    'target=scenario/balancers/independent-healthy status=OK evidence=outbound_https_verified' \
+    'target=balancer/balancers/latency/candidate/id~good status=OK evidence=candidate_https_verified' \
+    'target=balancer/balancers/latency/candidate/id~broken status=FAILED evidence=candidate_https_failed' \
     'target=balancer/balancers/latency/candidates status=DEGRADED evidence=candidates_partially_failed' \
     'target=balancer/balancers/latency status=DEGRADED evidence=balancer_partial_candidates'
 do

@@ -303,7 +303,20 @@ fn partial_recovery_code(failure: &str) -> Option<&'static str> {
 
 fn legacy_candidate_key(key: &str) -> bool {
     key.rsplit_once("/candidate/").is_some_and(|(_, suffix)| {
-        !matches!(suffix.parse::<usize>(), Ok(index) if index < 8 && suffix == index.to_string())
+        let positional = matches!(
+            suffix.parse::<usize>(),
+            Ok(index) if index < 8 && suffix == index.to_string()
+        );
+        // The reserved separator is not accepted in outbound tags. Accept
+        // only validated opaque IDs, never old raw tag-based observation keys.
+        let opaque = suffix.strip_prefix("id~").is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        });
+        !positional && !opaque
     })
 }
 
@@ -557,6 +570,55 @@ mod tests {
         assert!(restored
             .records
             .contains_key("balancer/source/pool/candidate/0"));
+    }
+
+    #[test]
+    fn rejects_invalid_opaque_candidate_keys_during_restore() {
+        assert!(legacy_candidate_key("balancer/source/pool/candidate/id~"));
+        assert!(legacy_candidate_key(
+            "balancer/source/pool/candidate/id~invalid/tag"
+        ));
+        assert!(legacy_candidate_key(
+            "balancer/source/pool/candidate/id~invalid.tag"
+        ));
+        assert!(!legacy_candidate_key(
+            "balancer/source/pool/candidate/id~a_B-2"
+        ));
+        assert!(!legacy_candidate_key("balancer/source/pool/candidate/0"));
+    }
+
+    #[test]
+    fn opaque_candidate_incident_survives_restart_without_restoring_raw_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let stable = "balancer/source/pool/candidate/id~sweden";
+        let raw_tag = "balancer/source/pool/candidate/private-outbound";
+        let mut state = State::default();
+        for _ in 0..2 {
+            state.observe(
+                stable,
+                Observation::new(Status::Failed, "candidate_https_failed"),
+                true,
+            );
+            state.observe(
+                raw_tag,
+                Observation::new(Status::Failed, "candidate_https_failed"),
+                true,
+            );
+        }
+        state.persist(&path).unwrap();
+        let mut restored = State::load(&path).unwrap();
+        assert_eq!(restored.records.len(), 1);
+        assert!(restored.records.contains_key(stable));
+        assert_eq!(restored.pending.len(), 1);
+        assert_eq!(restored.pending[0].key, stable);
+        restored.observe(
+            stable,
+            Observation::new(Status::Ok, "candidate_https_verified"),
+            true,
+        );
+        assert_eq!(restored.pending.len(), 2);
+        assert_eq!(restored.pending[1].status, Status::Ok);
     }
 
     #[test]

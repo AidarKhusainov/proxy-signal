@@ -51,11 +51,49 @@ controlled client test; no synthetic egress result proves it.
 
 Probes that intentionally modify routes to simulate a failed candidate are **simulation** checks, not proofs of automatic failover in an unchanged client. Live network impairment requires separate isolated execution and explicit opt-in; never modify the host firewall or production nodes.
 
+### Independent outbound diagnostics
+
+For an optional `scenarios[]` check, `independent_outbound: true` adds a
+temporary loopback HTTP inbound with a rule selecting exactly the configured
+`outbound_tag`. The original Xray outbounds, transport settings, DNS, dialer
+dependencies and normal diagnostic inbound rules are retained. A successful
+HTTPS probe with matching Xray access-log evidence reports
+`outbound_https_verified`, **not** proof of the original profile's routing
+policy or client inbound. Such checks cannot assert blocking or original
+DNS-routing observations; configuration validation rejects those combinations.
+
+For `cdn[]`, the same option checks the XHTTP outbound while another route
+remains primary. Native CDN DNS/TLS/HTTP and HTTPS over the XHTTP outbound
+produce separate observations and incidents. These observations do **not**
+prove that the provider traversed a particular CDN edge, or that automatic
+fallback selected it. CDN route/fallback evidence stays `UNKNOWN` without
+independent proof. If either probe or its access evidence is missing, no
+success is inferred. Diagnostic inbounds bind only to loopback, and no
+production service, firewall or client profile is changed.
+
+The option defaults to `false` to retain original-route behavior of existing
+configurations.
+
 ## Data and identity
 
 - Stable IDs for source/profile/scenario. Do not use profile display names as unique identifiers.
+- To keep individual balancer candidate incidents stable when candidates change order, configure optional
+  `candidate_ids` as a complete mapping of Xray outbound tags to opaque operator-defined IDs.
+  Validate unique IDs and exact coverage of candidates. Legacy configurations without this
+  mapping retain positional candidate keys for compatibility; configure IDs before relying
+  on stable per-candidate incident history. Changes to key format do not prove recovery.
+  Observation keys must never contain outbound tags.
 - Observations include location, version/hash, timestamp, duration, kind, status, bounded failure code and available evidence.
 - Freshness is independent from availability. UNKNOWN/UNSUPPORTED/stale must never silently become OK.
+- Mandatory observation coverage has one additional source-level `coverage/<source-id>` record and incident.
+  When a source loads successfully but a configured profile, independent scenario, balancer candidate,
+  or CDN endpoint/tunnel is missing, stale, UNKNOWN or UNSUPPORTED, the coverage record is FAILED
+  and alerts after comparable consecutive observations. A confirmed individual VPN FAILED/DEGRADED
+  remains its **own** incident and counts as observed evidence, not healthy connectivity.
+  Source HTTP failures retain their existing source incident instead of duplicating coverage alerts.
+  Deliberately unproven leastPing selection, physical cascade/CDN hops and client-inbound semantics
+  are excluded from mandatory evidence. A coverage recovery message means diagnostics resumed,
+  **not** that every VPN route recovered.
 - Incident correlation requires comparable consecutive results for the same scenario; different failures do not merge into a false consecutive outage.
 - If source refresh fails, a cached profile can still be tested with age shown; the refresh failure is a separate incident.
 - Stored configs and credentials are sensitive even when encrypted transport is used. SQLite is a later milestone, not an M0 prerequisite.

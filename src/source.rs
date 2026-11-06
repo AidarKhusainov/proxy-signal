@@ -71,6 +71,12 @@ pub fn select(source: &Source, document: Value) -> Result<Vec<SelectedProfile>> 
         .collect())
 }
 
+/// A complete selection contains one valid document for each required profile,
+/// without unexpected subscription entries.
+pub fn selection_complete(selected: &[SelectedProfile], actual_entries: usize) -> bool {
+    selected.len() == actual_entries && selected.iter().all(|profile| profile.document.is_some())
+}
+
 pub async fn load(source: &Source, timeout: Duration) -> Result<Value> {
     let max_bytes = if source.profiles().is_empty() {
         MAX_PROFILE
@@ -210,6 +216,28 @@ mod tests {
         assert!(entries[0].document.is_none());
         assert!(entries[1].document.is_some());
         assert!(select(&source, serde_json::json!({"outbounds":[]})).is_err());
+    }
+
+    #[test]
+    fn subscription_contract_requires_every_expected_profile_and_no_unselected_extras() {
+        let source: Source = serde_yaml::from_str(
+            "kind: https\nid: happ\nurl: https://example.org/sub\nprofiles:\n  - { id: first, remarks: A }\n  - { id: second, remarks: B }\n",
+        )
+        .unwrap();
+        let a = serde_json::json!({"remarks":"A","outbounds":[{"protocol":"vless"}]});
+        let b = serde_json::json!({"remarks":"B","outbounds":[{"protocol":"vless"}]});
+        let complete = select(&source, serde_json::json!([b.clone(), a.clone()])).unwrap();
+        assert!(selection_complete(&complete, 2));
+        let missing = select(&source, serde_json::json!([a.clone()])).unwrap();
+        assert!(!selection_complete(&missing, 1));
+        let duplicate = select(&source, serde_json::json!([a.clone(), a.clone()])).unwrap();
+        assert!(!selection_complete(&duplicate, 2));
+        let extra = select(
+            &source,
+            serde_json::json!([a, b, {"remarks":"Unexpected","outbounds":[{"protocol":"vless"}]}]),
+        )
+        .unwrap();
+        assert!(!selection_complete(&extra, 3));
     }
 
     #[test]

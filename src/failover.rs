@@ -139,6 +139,7 @@ pub fn inspect(profile: &Value, case: &FailoverScenario) -> Observation {
         balancer_tag: case.balancer_tag.clone(),
         strategy: BalancerStrategy::LeastPing,
         candidates,
+        candidate_ids: Default::default(),
         fallback_tag: case.fallback_tag.clone(),
     };
     let result = balancer::inspect(profile, &balancer_case);

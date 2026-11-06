@@ -29,6 +29,10 @@ pub struct Scenario {
     pub url: String,
     pub route: ExpectedRoute,
     pub outbound_tag: String,
+    /// Probe only this outbound through an isolated loopback inbound.
+    /// Does not attest the original profile's routing policy.
+    #[serde(default)]
+    pub independent_outbound: bool,
     #[serde(default)]
     pub dns: Option<DnsExpectation>,
 }
@@ -41,6 +45,10 @@ pub struct BalancerScenario {
     pub balancer_tag: String,
     pub strategy: BalancerStrategy,
     pub candidates: Vec<String>,
+    /// Mapping from Xray outbound tag to opaque, stable candidate identity.
+    /// Legacy configurations without IDs retain index-based observation keys.
+    #[serde(default)]
+    pub candidate_ids: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub fallback_tag: Option<String>,
 }
@@ -64,6 +72,9 @@ pub struct CdnScenario {
     pub expected_http_status: u16,
     pub url: String,
     pub outbound_tag: String,
+    /// Test the XHTTP outbound independently of the active primary route.
+    #[serde(default)]
+    pub independent_outbound: bool,
 }
 
 /// Controlled lab-only failover. The primary must be a local SOCKS outbound
@@ -264,6 +275,9 @@ impl Source {
 pub struct Telegram {
     pub bot_token_file: PathBuf,
     pub chat_id: String,
+    /// Optional operator-owned SOCKS5 proxy. Remote DNS is mandatory.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 pub fn load(path: &str) -> Result<Config> {
@@ -373,27 +387,43 @@ impl Config {
             }
             let mut scenario_ids = HashSet::new();
             let mut destinations = HashSet::new();
+            // Each independently tested outbound has its own diagnostic inbound.
+            // Requests can share an HTTPS destination without sharing route evidence.
+            let mut independent_destinations = HashSet::new();
             for case in source.scenarios() {
                 if !valid_id(&case.id) || !scenario_ids.insert(case.id.as_str()) {
                     bail!("invalid or duplicate scenario id");
+                }
+                if case.independent_outbound
+                    && (case.route == ExpectedRoute::Block || case.dns.is_some())
+                {
+                    bail!("independent outbound cannot prove blocking or original DNS");
                 }
                 let url = validate_https(&case.url)?;
                 let destination = (
                     url.host_str().unwrap_or("").to_owned(),
                     url.port_or_known_default(),
                 );
-                if !destinations.insert(destination.clone()) {
+                if case.independent_outbound {
+                    if !independent_destinations
+                        .insert((case.outbound_tag.clone(), destination.clone()))
+                    {
+                        bail!("duplicate independent outbound destination");
+                    }
+                } else if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
-                if self.endpoints.iter().any(|e| {
-                    let Ok(endpoint_url) = validate_https(&e.url) else {
-                        return false;
-                    };
-                    (
-                        endpoint_url.host_str().unwrap_or("").to_owned(),
-                        endpoint_url.port_or_known_default(),
-                    ) == destination
-                }) {
+                if !case.independent_outbound
+                    && self.endpoints.iter().any(|e| {
+                        let Ok(endpoint_url) = validate_https(&e.url) else {
+                            return false;
+                        };
+                        (
+                            endpoint_url.host_str().unwrap_or("").to_owned(),
+                            endpoint_url.port_or_known_default(),
+                        ) == destination
+                    })
+                {
                     bail!("scenario destination overlaps egress endpoint");
                 }
                 if !valid_tag(&case.outbound_tag) {
@@ -445,6 +475,18 @@ impl Config {
                     || case.fallback_tag.as_ref() == Some(&case.balancer_tag)
                 {
                     bail!("invalid balancer expectation");
+                }
+                if !case.candidate_ids.is_empty()
+                    && (case.candidate_ids.len() != case.candidates.len()
+                        || case
+                            .candidate_ids
+                            .keys()
+                            .any(|tag| !case.candidates.contains(tag))
+                        || case.candidate_ids.values().any(|id| !valid_id(id))
+                        || case.candidate_ids.values().collect::<HashSet<_>>().len()
+                            != case.candidate_ids.len())
+                {
+                    bail!("invalid balancer candidate ids");
                 }
                 let mut unique = HashSet::new();
                 for tag in &case.candidates {
@@ -508,18 +550,26 @@ impl Config {
                     url.host_str().unwrap_or("").to_owned(),
                     url.port_or_known_default(),
                 );
-                if !destinations.insert(destination.clone()) {
+                if case.independent_outbound {
+                    if !independent_destinations
+                        .insert((case.outbound_tag.clone(), destination.clone()))
+                    {
+                        bail!("duplicate independent outbound destination");
+                    }
+                } else if !destinations.insert(destination.clone()) {
                     bail!("duplicate scenario destination");
                 }
-                if self.endpoints.iter().any(|e| {
-                    let Ok(endpoint_url) = validate_https(&e.url) else {
-                        return false;
-                    };
-                    (
-                        endpoint_url.host_str().unwrap_or("").to_owned(),
-                        endpoint_url.port_or_known_default(),
-                    ) == destination
-                }) {
+                if !case.independent_outbound
+                    && self.endpoints.iter().any(|e| {
+                        let Ok(endpoint_url) = validate_https(&e.url) else {
+                            return false;
+                        };
+                        (
+                            endpoint_url.host_str().unwrap_or("").to_owned(),
+                            endpoint_url.port_or_known_default(),
+                        ) == destination
+                    })
+                {
                     bail!("CDN tunnel destination overlaps egress endpoint");
                 }
             }
@@ -590,9 +640,33 @@ impl Config {
             {
                 bail!("invalid Telegram chat ID");
             }
+            if let Some(proxy) = &tg.proxy_url {
+                validate_telegram_proxy(proxy)?;
+            }
         }
         Ok(())
     }
+}
+
+/// Telegram credentials must never be embedded in a proxy URL. SOCKS5h
+/// forwards DNS lookup to the trusted proxy instead of resolving locally.
+fn validate_telegram_proxy(raw: &str) -> Result<()> {
+    if raw.len() > 256 {
+        bail!("Telegram proxy URL too long");
+    }
+    let proxy = Url::parse(raw).context("invalid Telegram proxy URL")?;
+    if proxy.scheme() != "socks5h"
+        || proxy.host_str().is_none()
+        || proxy.port().is_none()
+        || !proxy.username().is_empty()
+        || proxy.password().is_some()
+        || !matches!(proxy.path(), "" | "/")
+        || proxy.query().is_some()
+        || proxy.fragment().is_some()
+    {
+        bail!("Telegram proxy must be socks5h://host:port without credentials or path");
+    }
+    Ok(())
 }
 
 pub fn validate_https(s: &str) -> Result<Url> {
@@ -692,6 +766,21 @@ mod tests {
     }
 
     #[test]
+    fn telegram_proxy_is_explicit_remote_dns_only() {
+        assert!(validate_telegram_proxy("socks5h://xray-proxy:10808").is_ok());
+        for proxy in [
+            "socks5://xray-proxy:10808",
+            "http://xray-proxy:10808",
+            "socks5h://user:pass@xray-proxy:10808",
+            "socks5h://xray-proxy:10808/other",
+            "socks5h://xray-proxy",
+            "socks5h://xray-proxy:10808?test=1",
+        ] {
+            assert!(validate_telegram_proxy(proxy).is_err(), "{proxy}");
+        }
+    }
+
+    #[test]
     fn scenario_configuration_is_optional_and_strict() {
         let yaml = "kind: file\nid: node\npath: /tmp/profile.json\n";
         let old: Source = serde_yaml::from_str(yaml).unwrap();
@@ -710,12 +799,107 @@ mod tests {
     }
 
     #[test]
+    fn independent_outbound_rejects_unprovable_dns_and_block_route() {
+        let sample = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 1\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.com/ip }\nsources:\n  - kind: file\n    id: lab\n    path: /tmp/profile.json\n    scenarios:\n      - id: independent\n        url: https://example.net/\n        route: proxy\n        outbound_tag: vpn\n        independent_outbound: true\n";
+        let parsed: Config = serde_yaml::from_str(sample).unwrap();
+        assert!(parsed.validate().is_ok());
+        let blocked: Config =
+            serde_yaml::from_str(&sample.replace("route: proxy", "route: block")).unwrap();
+        assert!(blocked.validate().is_err());
+        let dns = sample.replace(
+            "independent_outbound: true",
+            "independent_outbound: true\n        dns:\n          server: UDP:1.1.1.1:53\n          expected_ips: [93.184.215.14]",
+        );
+        let parsed: Config = serde_yaml::from_str(&dns).unwrap();
+        assert!(parsed.validate().is_err());
+    }
+
+    #[test]
+    fn independent_diagnostic_inbounds_can_share_a_verified_https_target() {
+        let yaml = r#"
+version: 1
+interval_seconds: 300
+timeout_seconds: 30
+parallelism: 2
+state_file: /tmp/state.json
+endpoints:
+  - { id: baseline, url: "https://api.ipify.org" }
+sources:
+  - kind: file
+    id: lab
+    path: /tmp/profile.json
+    scenarios:
+      - id: independent
+        url: "https://api.ipify.org"
+        route: proxy
+        outbound_tag: primary
+        independent_outbound: true
+    cdn:
+      - id: cdn
+        endpoint_url: "https://edge.example.org/generate_204"
+        expected_http_status: 204
+        url: "https://api.ipify.org"
+        outbound_tag: fallback
+        independent_outbound: true
+"#;
+        let parsed: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(parsed.validate().is_ok());
+
+        // The same destination is attributable only to a distinct diagnostic
+        // inbound per outbound tag, never by the HTTP response alone.
+        let duplicate = yaml.replace("outbound_tag: fallback", "outbound_tag: primary");
+        assert!(serde_yaml::from_str::<Config>(&duplicate)
+            .unwrap()
+            .validate()
+            .is_err());
+        let ordinary = yaml.replace("        independent_outbound: true\n", "");
+        assert!(serde_yaml::from_str::<Config>(&ordinary)
+            .unwrap()
+            .validate()
+            .is_err());
+        let non_independent_cdn = yaml.replace(
+            "        outbound_tag: fallback\n        independent_outbound: true",
+            "        outbound_tag: fallback",
+        );
+        assert!(serde_yaml::from_str::<Config>(&non_independent_cdn)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+
+    #[test]
     fn optional_balancer_scenarios_parse_strictly() {
         let sample = "kind: file\nid: node\npath: /tmp/profile.json\nbalancers:\n  - id: preferred\n    url: https://example.com/\n    balancer_tag: pool\n    strategy: leastPing\n    candidates: [node-a, node-b]\n";
         let source: Source = serde_yaml::from_str(sample).unwrap();
         assert_eq!(source.balancers().len(), 1);
         assert!(serde_yaml::from_str::<Source>(&sample.replace("leastPing", "fastest")).is_err());
         assert!(serde_yaml::from_str::<Source>(&sample.replace("node-b", "node-a")).is_ok());
+    }
+
+    #[test]
+    fn candidate_ids_must_match_candidates_and_remain_unique() {
+        let yaml = "version: 1\ninterval_seconds: 300\ntimeout_seconds: 20\nparallelism: 2\nstate_file: /tmp/state.json\nendpoints:\n  - { id: ip, url: https://example.org/ip }\nsources:\n  - kind: file\n    id: lab\n    path: /tmp/profile.json\n    balancers:\n      - id: pool\n        url: https://probe.example.net/\n        balancer_tag: pool\n        strategy: leastPing\n        candidates: [node-a, node-b]\n        candidate_ids: {node-a: sweden, node-b: finland}\n";
+        let valid: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(valid.validate().is_ok());
+        let legacy: Config = serde_yaml::from_str(&yaml.replace(
+            "        candidate_ids: {node-a: sweden, node-b: finland}\n",
+            "",
+        ))
+        .unwrap();
+        assert!(legacy.validate().is_ok());
+        for candidate_ids in [
+            "        candidate_ids: {node-a: sweden}\n",
+            "        candidate_ids: {node-a: sweden, node-b: sweden}\n",
+            "        candidate_ids: {node-a: sweden, node-x: finland}\n",
+            "        candidate_ids: {node-a: sweden, node-b: invalid/id}\n",
+        ] {
+            let invalid: Config = serde_yaml::from_str(&yaml.replace(
+                "        candidate_ids: {node-a: sweden, node-b: finland}\n",
+                candidate_ids,
+            ))
+            .unwrap();
+            assert!(invalid.validate().is_err());
+        }
     }
 
     #[test]
@@ -741,6 +925,19 @@ mod tests {
             &yaml.replace("outbound_tag: vpn", "unknown_field: vpn")
         )
         .is_err());
+    }
+
+    #[test]
+    fn cdn_independent_outbound_flag_is_explicit_and_backward_compatible() {
+        let yaml = "kind: file\nid: lab\npath: /tmp/profile.json\ncdn:\n  - id: edge\n    endpoint_url: https://cdn.example.org/generate_204\n    expected_http_status: 204\n    url: https://example.net/\n    outbound_tag: vpn\n";
+        let legacy: Source = serde_yaml::from_str(yaml).unwrap();
+        assert!(!legacy.cdn()[0].independent_outbound);
+        let independent: Source = serde_yaml::from_str(&yaml.replace(
+            "    outbound_tag: vpn",
+            "    outbound_tag: vpn\n    independent_outbound: true",
+        ))
+        .unwrap();
+        assert!(independent.cdn()[0].independent_outbound);
     }
 
     #[test]

@@ -286,29 +286,40 @@ pub async fn check(
         .iter()
         .map(|case| cdn::inspect(&original, case))
         .collect();
-    // Each unique candidate is tested through a temporary inbound with a
-    // dedicated routing rule. Original probe-in traffic never matches these
-    // rules, so the balancer's normal route remains intact.
+    // Diagnostic traffic is isolated by inboundTag. The original probe-in
+    // keeps the full profile's unchanged routing rules. Each unique outbound
+    // gets a loopback-only inlet shared by all checks for that outbound.
+    let mut wanted_tags = Vec::new();
+    for (case, status) in balancers.iter().zip(&inspected) {
+        if status.status == Status::Ok {
+            wanted_tags.extend(case.candidates.iter().map(String::as_str));
+        }
+    }
+    for case in scenarios {
+        if case.independent_outbound && scenario::static_check(&original, case).is_none() {
+            wanted_tags.push(case.outbound_tag.as_str());
+        }
+    }
+    for (case, status) in cdn_cases.iter().zip(&inspected_cdn) {
+        if case.independent_outbound && status.status == Status::Ok {
+            wanted_tags.push(case.outbound_tag.as_str());
+        }
+    }
     let mut diagnostics: Vec<(String, String, u16)> = Vec::new();
     let mut used_ports = HashSet::from([port]);
-    for (case, status) in balancers.iter().zip(&inspected) {
-        if status.status != Status::Ok {
+    for tag in wanted_tags {
+        if diagnostics.iter().any(|(existing, _, _)| existing == tag) {
             continue;
         }
-        for tag in &case.candidates {
-            if diagnostics.iter().any(|(existing, _, _)| existing == tag) {
-                continue;
+        let candidate_port = loop {
+            let socket = TcpListener::bind("127.0.0.1:0").context("candidate_loopback_bind")?;
+            let candidate_port = socket.local_addr()?.port();
+            if used_ports.insert(candidate_port) {
+                break candidate_port;
             }
-            let candidate_port = loop {
-                let socket = TcpListener::bind("127.0.0.1:0").context("candidate_loopback_bind")?;
-                let candidate_port = socket.local_addr()?.port();
-                if used_ports.insert(candidate_port) {
-                    break candidate_port;
-                }
-            };
-            let inbound = format!("proxy-signal-candidate-{}", diagnostics.len());
-            diagnostics.push((tag.clone(), inbound, candidate_port));
-        }
+        };
+        let inbound = format!("proxy-signal-candidate-{}", diagnostics.len());
+        diagnostics.push((tag.to_owned(), inbound, candidate_port));
     }
     if !diagnostics.is_empty() {
         install_candidate_diagnostics(&mut config, &diagnostics)?;
@@ -361,9 +372,9 @@ pub async fn check(
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
             let route_proxy = proxy.clone();
             spawn_balancer_probe(
@@ -371,7 +382,7 @@ pub async fn check(
                 case_index,
                 None,
                 deadline,
-                async move { probe::probe_https(&url, &route_proxy, remaining).await },
+                async move { probe::probe_https(&url, &route_proxy, request_budget).await },
             );
             for (candidate_index, tag) in case.candidates.iter().enumerate() {
                 let Some((_, _, candidate_port)) = diagnostics.iter().find(|(t, _, _)| t == tag)
@@ -379,9 +390,9 @@ pub async fn check(
                     continue;
                 };
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                let Some(request_budget) = diagnostic_http_budget(remaining) else {
                     continue;
-                }
+                };
                 let url = case.url.clone();
                 let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
                 spawn_balancer_probe(
@@ -389,7 +400,7 @@ pub async fn check(
                     case_index,
                     Some(candidate_index),
                     deadline,
-                    async move { probe::probe_https(&url, &candidate_proxy, remaining).await },
+                    async move { probe::probe_https(&url, &candidate_proxy, request_budget).await },
                 );
             }
         }
@@ -402,22 +413,60 @@ pub async fn check(
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
             let route_proxy = proxy.clone();
             cascade_tasks.spawn(async move {
                 (
                     index,
-                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, remaining))
-                        .await
-                        .ok(),
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&url, &route_proxy, request_budget),
+                    )
+                    .await
+                    .ok(),
                 )
             });
         }
-        // CDN tunnel requests run through the original outbound routing, not a
-        // synthetic replacement of its XHTTP transport.
+        // Independent outbound checks start before ordinary egress requests.
+        // They exercise the unchanged Xray outbound through a diagnostic
+        // inbound, without claiming the client's original route was selected.
+        let mut scenario_tasks = JoinSet::new();
+        let mut independent_scenario_http = vec![None; scenarios.len()];
+        for (index, case) in scenarios.iter().enumerate() {
+            if !case.independent_outbound || scenario::static_check(&original, case).is_some() {
+                continue;
+            }
+            let Some((_, _, candidate_port)) = diagnostics
+                .iter()
+                .find(|(tag, _, _)| tag == &case.outbound_tag)
+            else {
+                continue;
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
+                continue;
+            };
+            let url = case.url.clone();
+            let candidate_proxy = format!("http://127.0.0.1:{candidate_port}");
+            scenario_tasks.spawn(async move {
+                (
+                    index,
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&url, &candidate_proxy, request_budget),
+                    )
+                    .await
+                    .ok(),
+                )
+            });
+        }
+        // CDN tunnel requests preserve the original transport and credentials.
+        // The optional independent mode forces only the test inbound to the
+        // configured outbound; it does not test fallback selection itself.
+
         let mut cdn_tasks = JoinSet::new();
         let mut cdn_http = vec![None; cdn_cases.len()];
         for (index, (case, config)) in cdn_cases.iter().zip(&inspected_cdn).enumerate() {
@@ -425,17 +474,30 @@ pub async fn check(
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let Some(request_budget) = diagnostic_http_budget(remaining) else {
                 continue;
-            }
+            };
             let url = case.url.clone();
-            let route_proxy = proxy.clone();
+            let route_proxy = if case.independent_outbound {
+                let Some((_, _, candidate_port)) = diagnostics
+                    .iter()
+                    .find(|(tag, _, _)| tag == &case.outbound_tag)
+                else {
+                    continue;
+                };
+                format!("http://127.0.0.1:{candidate_port}")
+            } else {
+                proxy.clone()
+            };
             cdn_tasks.spawn(async move {
                 (
                     index,
-                    timeout_at(deadline, probe::probe_https(&url, &route_proxy, remaining))
-                        .await
-                        .ok(),
+                    timeout_at(
+                        deadline,
+                        probe::probe_https(&url, &route_proxy, request_budget),
+                    )
+                    .await
+                    .ok(),
                 )
             });
         }
@@ -493,11 +555,27 @@ pub async fn check(
             }
             egress.push(observation);
         }
+        while let Some(joined) = scenario_tasks.join_next().await {
+            if let Ok((index, result)) = joined {
+                independent_scenario_http[index] = result;
+            }
+        }
         let mut attempts: Vec<std::result::Result<bool, Observation>> =
             Vec::with_capacity(scenarios.len());
-        for case in scenarios {
+        for (index, case) in scenarios.iter().enumerate() {
             if let Some(unsupported) = scenario::static_check(&original, case) {
                 attempts.push(Err(unsupported));
+                continue;
+            }
+            if case.independent_outbound {
+                if let Some(http_ok) = independent_scenario_http[index] {
+                    attempts.push(Ok(http_ok));
+                } else {
+                    attempts.push(Err(Observation::new(
+                        Status::Unknown,
+                        "outbound_probe_unobserved",
+                    )));
+                }
                 continue;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -535,7 +613,7 @@ pub async fn check(
         Ok((egress, attempts, balancing, cascade_http, cdn_http))
     }
     .await;
-    child.stop().await;
+    child.flush_and_stop().await;
     // Read only after process termination; cap both logs and fail closed on
     // oversized, invalid or inaccessible diagnostic data.
     let logs = if scenarios.is_empty()
@@ -553,18 +631,30 @@ pub async fn check(
             .zip(scenarios)
             .map(|(attempt, case)| match attempt {
                 Err(observation) => observation,
-                Ok(http_ok) => match &logs {
-                    Some((Some(access), error)) if case.dns.is_none() || error.is_some() => {
-                        scenario::evaluate_for_inbound(
-                            case,
-                            http_ok,
-                            access,
-                            error.as_deref().unwrap_or(""),
-                            &inbound_tag,
-                        )
+                Ok(http_ok) => {
+                    let diagnostic_inbound = if case.independent_outbound {
+                        diagnostics
+                            .iter()
+                            .find(|(tag, _, _)| tag == &case.outbound_tag)
+                            .map(|(_, name, _)| name.as_str())
+                    } else {
+                        Some(inbound_tag.as_str())
+                    };
+                    match (diagnostic_inbound, &logs) {
+                        (Some(probe_inbound), Some((Some(access), error)))
+                            if case.dns.is_none() || error.is_some() =>
+                        {
+                            scenario::evaluate_for_inbound(
+                                case,
+                                http_ok,
+                                access,
+                                error.as_deref().unwrap_or(""),
+                                probe_inbound,
+                            )
+                        }
+                        _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
                     }
-                    _ => Observation::new(Status::Unknown, "diagnostic_logs_unavailable"),
-                },
+                }
             })
             .collect();
         let balancers = balancers
@@ -689,15 +779,27 @@ pub async fn check(
                         route: cdn::route(),
                     };
                 }
-                CdnChecks {
-                    config,
-                    tunnel: cdn::tunnel_for_inbound(
+                let diagnostic_inbound = if case.independent_outbound {
+                    diagnostics
+                        .iter()
+                        .find(|(tag, _, _)| tag == &case.outbound_tag)
+                        .map(|(_, name, _)| name.as_str())
+                } else {
+                    Some(inbound_tag.as_str())
+                };
+                let tunnel = match diagnostic_inbound {
+                    Some(probe_inbound) => cdn::tunnel_for_inbound(
                         &original,
                         case,
                         http_ok,
                         logs.as_ref().and_then(|(access, _)| access.as_deref()),
-                        &inbound_tag,
+                        probe_inbound,
                     ),
+                    None => Observation::new(Status::Unknown, "cdn_outbound_not_instrumented"),
+                };
+                CdnChecks {
+                    config,
+                    tunnel,
                     route: cdn::route(),
                 }
             })
@@ -714,6 +816,17 @@ pub async fn check(
 
 // Preserve UNKNOWN when an individual request runs out of time, rather than
 // converting a timeout into a confirmed HTTPS failure.
+/// Give the request its own bounded timeout before the supervising Xray
+/// deadline. A hung TLS request can then return a verified negative HTTPS
+/// result with access attribution, rather than racing the whole profile's
+/// deadline and losing the observation altogether. When the remaining budget
+/// is too short, retain UNKNOWN instead of guessing a failure.
+fn diagnostic_http_budget(remaining: Duration) -> Option<Duration> {
+    remaining
+        .checked_sub(Duration::from_secs(3))
+        .filter(|budget| !budget.is_zero())
+}
+
 fn spawn_balancer_probe<F>(
     tasks: &mut JoinSet<(usize, Option<usize>, Option<bool>)>,
     case_index: usize,
@@ -849,6 +962,21 @@ impl ManagedChild {
         let _ = self.child.start_kill();
     }
 
+    /// Allow a completed Xray probe to flush its buffered access evidence
+    /// before forcibly reaping the process group. A cancelled probe still
+    /// uses Drop and kills the entire group immediately.
+    pub(crate) async fn flush_and_stop(&mut self) {
+        #[cfg(unix)]
+        if !self.finished {
+            if let Some(group) = self.process_group {
+                use nix::sys::signal::{killpg, Signal};
+                let _ = killpg(group, Signal::SIGTERM);
+                sleep(Duration::from_millis(250)).await;
+            }
+        }
+        self.stop().await;
+    }
+
     pub(crate) async fn stop(&mut self) {
         if self.finished {
             return;
@@ -871,6 +999,43 @@ impl Drop for ManagedChild {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_probe_can_flush_access_evidence_before_forced_cleanup() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("flushed");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("trap 'printf flushed > \"$1\"; exit 0' TERM; while :; do sleep 0.02; done")
+            .arg("diagnostic")
+            .arg(&marker)
+            .kill_on_drop(true);
+        command.as_std_mut().process_group(0);
+        let mut managed = ManagedChild::new(command.spawn().unwrap());
+        sleep(Duration::from_millis(40)).await;
+        managed.flush_and_stop().await;
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "flushed");
+        assert!(managed.finished);
+    }
+
+    #[test]
+    fn diagnostic_https_has_its_own_deadline_before_xray_shutdown() {
+        assert_eq!(diagnostic_http_budget(Duration::ZERO), None);
+        assert_eq!(diagnostic_http_budget(Duration::from_secs(2)), None);
+        assert_eq!(diagnostic_http_budget(Duration::from_secs(3)), None);
+        assert_eq!(
+            diagnostic_http_budget(Duration::from_secs(45)),
+            Some(Duration::from_secs(42))
+        );
+        assert_eq!(
+            diagnostic_http_budget(Duration::from_secs(5)),
+            Some(Duration::from_secs(2))
+        );
+    }
+
     #[test]
     fn least_ping_without_observation_is_not_assumed_ready() {
         let dynamic = serde_json::json!({
@@ -1140,6 +1305,7 @@ mod tests {
             url: "https://example.org/".into(),
             route: ExpectedRoute::Proxy,
             outbound_tag: "vpn".into(),
+            independent_outbound: false,
             dns: None,
         };
         assert_eq!(
@@ -1192,6 +1358,7 @@ mod tests {
             url: "https://example.org/".into(),
             route: crate::config::ExpectedRoute::Proxy,
             outbound_tag: "vpn".into(),
+            independent_outbound: false,
             dns: None,
         };
         let log = "2026/01/01 from 127.0.0.1:1 accepted //example.org:443 [socks-client ==> vpn]";

@@ -28,3 +28,5 @@ sources:
 telegram:
   bot_token_file: /run/secrets/telegram-token
   chat_id: "REPLACE_PRIVATELY"
+  # Optional: operator-provided internal SOCKS5 proxy, remote DNS required.
+  # proxy_url: socks5h://internal-proxy:10808

@@ -33,12 +33,21 @@ impl Sender {
         {
             bail!("telegram_secret_invalid");
         }
+        // Never inherit host proxy environment, and never fall back to a
+        // direct Telegram connection when the configured SOCKS proxy fails.
+        let mut client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            // Good SOCKS handshakes finish in under a second on Hostland.
+            // Bound stalled connects separately from HTTPS response handling.
+            .connect_timeout(Duration::from_secs(6))
+            .timeout(Duration::from_secs(18));
+        if let Some(proxy_url) = &config.proxy_url {
+            client =
+                client.proxy(reqwest::Proxy::all(proxy_url).context("telegram_proxy_invalid")?);
+        }
         Ok(Self {
-            client: Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(8))
-                .build()?,
+            client: client.build()?,
             url: format!("https://api.telegram.org/bot{token}/sendMessage"),
             chat_id: config.chat_id.clone(),
         })
@@ -49,8 +58,17 @@ impl Sender {
             let Some(notice) = state.pending.first().cloned() else {
                 break;
             };
-            if self.send(&notice).await.is_err() {
-                eprintln!("ProxySignal: telegram_delivery_failed");
+            if let Err(error) = self.send(&notice).await {
+                // Never print Reqwest errors: their URL can contain the bot token.
+                let code = match error.to_string().as_str() {
+                    "telegram_connect" => "connect",
+                    "telegram_timeout" => "timeout",
+                    "telegram_transport" => "transport",
+                    "telegram_http_status" => "http_status",
+                    "telegram_not_accepted" => "api_rejected",
+                    _ => "other",
+                };
+                eprintln!("ProxySignal: telegram_delivery_failed:{code}");
                 break;
             }
             // No await between acknowledgement and persistence: cancellation
@@ -62,25 +80,45 @@ impl Sender {
     }
 
     pub async fn send(&self, notice: &Notice) -> Result<()> {
-        let message = match notice.status {
-            Status::Ok => "Восстановлено: OK",
-            Status::Failed => "Подтверждённый сбой: FAILED",
-            Status::Degraded => "Частичная доступность: DEGRADED",
-            Status::Unknown => "Сбой устранён; полная работоспособность не подтверждена: UNKNOWN",
-            Status::Unsupported => return Ok(()),
+        let message = if notice.key.starts_with("coverage/") {
+            match notice.status {
+                Status::Ok => "Покрытие мониторинга восстановлено: OK",
+                Status::Failed => "Недоступны обязательные проверки: FAILED",
+                Status::Degraded => "Часть проверок недоступна: DEGRADED",
+                Status::Unknown => "Достоверность мониторинга не подтверждена: UNKNOWN",
+                Status::Unsupported => return Ok(()),
+            }
+        } else {
+            match notice.status {
+                Status::Ok => "Восстановлено: OK",
+                Status::Failed => "Подтверждённый сбой: FAILED",
+                Status::Degraded => "Частичная доступность: DEGRADED",
+                Status::Unknown => {
+                    "Сбой устранён; полная работоспособность не подтверждена: UNKNOWN"
+                }
+                Status::Unsupported => return Ok(()),
+            }
         };
         let body = serde_json::json!({
             "chat_id": self.chat_id,
             "text": format!("ProxySignal · {message}\n{}\nВремя (Unix): {}", notice.key, notice.when),
             "disable_web_page_preview": true,
         });
-        let response = self
-            .client
-            .post(&self.url)
-            .json(&body)
-            .send()
-            .await
-            .context("telegram_http")?;
+        // Retry only connection establishment failures. A timeout after the
+        // POST may mean Telegram accepted it, so never replay ambiguous sends.
+        let mut connect_failures = 0;
+        let response = loop {
+            match self.client.post(&self.url).json(&body).send().await {
+                Ok(response) => break response,
+                Err(error) if error.is_connect() && connect_failures < 2 => {
+                    connect_failures += 1;
+                    tokio::time::sleep(Duration::from_millis(250 * connect_failures)).await;
+                }
+                Err(error) if error.is_connect() => bail!("telegram_connect"),
+                Err(error) if error.is_timeout() => bail!("telegram_timeout"),
+                Err(_) => bail!("telegram_transport"),
+            }
+        };
         if !response.status().is_success() {
             bail!("telegram_http_status");
         }
@@ -195,6 +233,81 @@ mod tests {
         );
         assert_eq!(state.pending.len(), 2);
         state
+    }
+
+    #[tokio::test]
+    async fn telegram_socks5h_uses_remote_dns_and_has_no_direct_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            for _ in 0..3 {
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(accepted) => break accepted,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing bounded SOCKS retry");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("SOCKS accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut greeting = [0; 3];
+                stream.read_exact(&mut greeting).unwrap();
+                assert_eq!(greeting, [5, 1, 0]);
+                stream.write_all(&[5, 0]).unwrap();
+                let mut request = [0; 5];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(&request[..4], &[5, 1, 0, 3]);
+                let mut address = vec![0; usize::from(request[4]) + 2];
+                stream.read_exact(&mut address).unwrap();
+                assert_eq!(&address[..address.len() - 2], b"api.telegram.org");
+                stream.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, "123:abc").unwrap();
+        let sender = Sender::new(&Telegram {
+            bot_token_file: token_file,
+            chat_id: "-1".to_owned(),
+            proxy_url: Some(format!("socks5h://{proxy_address}")),
+        })
+        .unwrap();
+        assert!(sender
+            .send(&Notice {
+                key: "profile/test".to_owned(),
+                status: Status::Failed,
+                when: 123,
+            })
+            .await
+            .is_err());
+        proxy.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn required_coverage_loss_message_does_not_claim_vpn_is_down() {
+        let (sender, server) = local_sender(vec![(200, r#"{"ok":true}"#.to_string())]);
+        sender
+            .send(&Notice {
+                key: "coverage/happ".to_owned(),
+                status: Status::Failed,
+                when: 123,
+            })
+            .await
+            .unwrap();
+        let messages = server.join().unwrap();
+        let text = messages[0]["text"].as_str().unwrap();
+        assert!(text.contains("Недоступны обязательные проверки: FAILED"));
+        assert!(text.contains("coverage/happ"));
+        assert!(!text.contains("Подтверждённый сбой"));
     }
 
     #[tokio::test]

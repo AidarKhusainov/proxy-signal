@@ -240,7 +240,7 @@ pub fn tunnel_for_inbound(
     access: Option<&str>,
     inbound_tag: &str,
 ) -> Observation {
-    if !attributable(profile, case) {
+    if !case.independent_outbound && !attributable(profile, case) {
         return unavailable(Status::Unknown, "cdn_tunnel_route_not_attributable");
     }
     let (Some(http_ok), Some(access)) = (http_ok, access) else {
@@ -251,7 +251,14 @@ pub fn tunnel_for_inbound(
             unavailable(Status::Failed, "cdn_unexpected_outbound")
         }
         Ok(_) if !http_ok => unavailable(Status::Failed, "cdn_tunnel_https_failed"),
-        Ok(_) => unavailable(Status::Ok, "cdn_tunnel_https_verified"),
+        Ok(_) => unavailable(
+            Status::Ok,
+            if case.independent_outbound {
+                "cdn_outbound_https_verified"
+            } else {
+                "cdn_tunnel_https_verified"
+            },
+        ),
         Err(_) => unavailable(Status::Unknown, "cdn_tunnel_route_unobserved"),
     }
 }
@@ -320,6 +327,7 @@ mod tests {
             expected_http_status: 404,
             url: "https://example.com/".into(),
             outbound_tag: "vpn".into(),
+            independent_outbound: false,
         }
     }
     fn profile() -> Value {
@@ -385,6 +393,49 @@ mod tests {
         ambiguous["routing"]["rules"][0]["domain"] = json!(["domain:example.com"]);
         assert_eq!(
             tunnel(&ambiguous, &case(), Some(true), Some(access)).status,
+            Status::Unknown
+        );
+    }
+
+    #[test]
+    fn independent_cdn_outbound_has_separate_https_proof_without_route_claim() {
+        let mut case = case();
+        case.independent_outbound = true;
+        let mut profile = profile();
+        // Original route intentionally points elsewhere; a fallback needs
+        // independent checking even while the primary is healthy.
+        profile["routing"]["rules"][0]["outboundTag"] = json!("primary");
+        let access = "2026/01/01 from 127.0.0.1:1 accepted //example.com:443 [proxy-signal-candidate-0 ==> vpn]";
+        let checked = tunnel_for_inbound(
+            &profile,
+            &case,
+            Some(true),
+            Some(access),
+            "proxy-signal-candidate-0",
+        );
+        assert_eq!(checked.status, Status::Ok);
+        assert_eq!(checked.code, "cdn_outbound_https_verified");
+        assert_eq!(route().status, Status::Unknown);
+        assert_eq!(
+            tunnel_for_inbound(
+                &profile,
+                &case,
+                Some(true),
+                Some(&access.replace("==> vpn", "==> primary")),
+                "proxy-signal-candidate-0"
+            )
+            .status,
+            Status::Failed
+        );
+        assert_eq!(
+            tunnel_for_inbound(
+                &profile,
+                &case,
+                Some(true),
+                None,
+                "proxy-signal-candidate-0"
+            )
+            .status,
             Status::Unknown
         );
     }
