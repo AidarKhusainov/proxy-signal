@@ -70,7 +70,7 @@ class PanelObserverGatusLive(unittest.TestCase):
 
             def post(group, target, ok, token=None):
                 token = token or render.panel_token(master, group, target)
-                url = host + "/api/v1/endpoints/panel_" + group + "-" + target + (
+                url = host + "/api/v1/endpoints/panel_" + group + "-" + target.replace("_", "-") + (
                     "/external?success=true" if ok else "/external?success=false"
                 )
                 req = urllib.request.Request(
@@ -106,7 +106,7 @@ class PanelObserverGatusLive(unittest.TestCase):
                 # The observer must never collapse a failed node into a passing Panel.
                 state = statuses()
                 self.assertIn("fast-panel", {s["name"] for s in state.values()})
-                wait_until(lambda: not statuses()["panel_fast-node_fin1"]["results"][-1]["success"])
+                wait_until(lambda: not statuses()["panel_fast-node-fin1"]["results"][-1]["success"])
                 # No push for panel after interval -> stale status, distinct from a failed node.
                 wait_until(lambda: not statuses()["panel_fast-panel"]["results"][-1]["success"], 35)
             except Exception:
