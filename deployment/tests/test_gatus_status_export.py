@@ -73,7 +73,8 @@ class ExportTests(unittest.TestCase):
             ])
 
     def test_ssh_restriction_enforced(self):
-        with mock.patch.dict("os.environ", {"SSH_ORIGINAL_COMMAND": "whoami"}, clear=True):
+        with mock.patch.object(exporter.sys, "argv", ["export-status.py", "--role", "ger1"]), \
+             mock.patch.dict("os.environ", {"SSH_ORIGINAL_COMMAND": "whoami"}, clear=True):
             self.assertEqual(exporter.main(), 1)
 
 
