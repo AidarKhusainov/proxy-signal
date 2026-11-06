@@ -38,6 +38,45 @@ class GatusConfigTests(TestCase):
         self.assertIn("'[STATUS] == 200'", value)
         self.assertNotIn("external-endpoints", value)
 
+    def test_cdn_endpoints_are_independent_strict_and_down_only(self):
+        for alerting in (False, True):
+            value = render.render(
+                "fin1", "123456:ABCDEFGHIJKLMNOPQRST", "-123",
+                enable_alerts=alerting,
+            )
+            self.assertEqual(value.count("  - name: cdn-xray-public\n"), 1)
+            self.assertEqual(value.count("  - name: cdn-subscriptions-public\n"), 1)
+            self.assertEqual(value.count("  - name: hostland-https\n"), 1)
+            for name, host in (
+                ("cdn-xray-public", "cdn-swe1.censor-amoroso.com"),
+                ("cdn-subscriptions-public", "sub.censor-amoroso.com"),
+            ):
+                section = value.split(f"  - name: {name}\n", 1)[1].split("\n  - name:", 1)[0]
+                self.assertIn("group: observer", section)
+                self.assertIn(f"url: https://{host}/generate_204", section)
+                self.assertIn("method: GET", section)
+                self.assertIn("interval: 5m", section)
+                self.assertIn("timeout: 10s", section)
+                self.assertIn("ignore-redirect: true", section)
+                self.assertIn("'[STATUS] == 204'", section)
+                self.assertNotIn("'[STATUS] == 200'", section)
+                if alerting:
+                    self.assertIn("failure-threshold: 2", section)
+                    self.assertIn("success-threshold: 1", section)
+                    self.assertIn("send-on-resolved: false", section)
+                    self.assertIn("type: telegram", section)
+                else:
+                    self.assertNotIn("alerts:", section)
+            self.assertEqual(value.count("failure-threshold: 2"), 3 if alerting else 0)
+
+    def test_cdn_checks_are_fin1_only(self):
+        ger1 = render.render(
+            "ger1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", "validpush123",
+            enable_alerts=True,
+        )
+        self.assertNotIn("cdn-xray-public", ger1)
+        self.assertNotIn("cdn-subscriptions-public", ger1)
+
     def test_rejects_invalid_roles_and_missing_push(self):
         with self.assertRaises(ValueError):
             render.render("other", "token", "chat")
