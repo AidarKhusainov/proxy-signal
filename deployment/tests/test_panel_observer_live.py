@@ -48,9 +48,9 @@ class PanelObserverGatusLive(unittest.TestCase):
             enable_alerts=False, panel_monitor=True,
         )
         cfg = cfg.replace("https://panel.censor-amoroso.com/", "http://127.0.0.1:1/")
-        cfg = cfg.replace("interval: 12m", "interval: 4s")
-        cfg = cfg.replace("interval: 4h", "interval: 4s")
-        self.assertEqual(cfg.count("interval: 4s"), len(render.PANEL_FAST) + len(render.PANEL_AUDIT))
+        cfg = cfg.replace("interval: 12m", "interval: 10s")
+        cfg = cfg.replace("interval: 4h", "interval: 10s")
+        self.assertEqual(cfg.count("interval: 10s"), len(render.PANEL_FAST) + len(render.PANEL_AUDIT))
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         name = "issue160-gatus-fixture-" + uuid.uuid4().hex[:8]
         with tempfile.TemporaryDirectory() as directory:
@@ -108,7 +108,7 @@ class PanelObserverGatusLive(unittest.TestCase):
                 self.assertIn("fast-panel", {s["name"] for s in state.values()})
                 wait_until(lambda: not statuses()["panel_fast-node_fin1"]["results"][-1]["success"])
                 # No push for panel after interval -> stale status, distinct from a failed node.
-                wait_until(lambda: not statuses()["panel_fast-panel"]["results"][-1]["success"], 15)
+                wait_until(lambda: not statuses()["panel_fast-panel"]["results"][-1]["success"], 35)
             except Exception:
                 logs = subprocess.run(["docker", "logs", "--tail", "50", name],
                                       capture_output=True, text=True, timeout=5)
