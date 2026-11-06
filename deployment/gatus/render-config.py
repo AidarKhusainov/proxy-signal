@@ -105,7 +105,7 @@ alerting:
                     if panel_alerts:
                         external += f"""    alerts:
       - type: telegram
-        failure-threshold: {threshold}
+        failure-threshold: {1 if name.endswith("_tick") else threshold}
         success-threshold: 1
         send-on-resolved: false
         description: {quote(f"Hostland {group}/{name}: FAILED либо нет свежего наблюдения")}
