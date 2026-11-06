@@ -134,6 +134,30 @@ class DurableDownTests(unittest.TestCase):
                     opener=Opener(),
                 )
 
+    def test_reconcile_lost_trigger_and_recovery(self):
+        from datetime import datetime, timezone
+        now = 1794000000
+        key = "observer_cdn-xray-public"
+        stamp = lambda seconds: datetime.fromtimestamp(
+            now + seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+        data = [{"key": key, "results": [
+            {"timestamp": stamp(-90), "success": False},
+            {"timestamp": stamp(-60), "success": False},
+        ]}]
+        relay.reconcile_results(self.db, "fin1", data, now)
+        relay.reconcile_results(self.db, "fin1", data, now)
+        self.assertEqual(self.count("SELECT COUNT(*) FROM outbox"), 1)
+        data[0]["results"].append({"timestamp": stamp(-30), "success": True})
+        relay.reconcile_results(self.db, "fin1", data, now)
+        self.assertEqual(self.count("SELECT active FROM targets"), 0)
+        data[0]["results"] = [
+            {"timestamp": stamp(-30), "success": True},
+            {"timestamp": stamp(-20), "success": False},
+            {"timestamp": stamp(-10), "success": False},
+        ]
+        relay.reconcile_results(self.db, "fin1", data, now)
+        self.assertEqual(self.count("SELECT COUNT(*) FROM outbox"), 2)
+
     def test_panel_160_keys_are_explicitly_allowlisted(self):
         relay.accept_event(self.db, "ger1",
             event(group="panel", name="fast-node-swe1"), now=123)
