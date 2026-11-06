@@ -66,7 +66,9 @@ class PanelObserverContract(unittest.TestCase):
         self.assertIn("description: ProxySignal", config)
         section = config.split("  - name: fast-panel\n", 1)[1].split("\n  - name:", 1)[0]
         self.assertNotIn("    alerts:", section)
-        self.assertEqual(config.count("    alerts:"), 1)
+        # #161 adds an independent ProxySignal coverage alert; the staged
+        # #160 Panel endpoints still have no newly armed alerts.
+        self.assertEqual(config.count("    alerts:"), 2)
 
     def test_complete_status_report_and_failures_not_scheduler_failures(self):
         command = self.report("fast", {"postgres", "node_fin1"})
