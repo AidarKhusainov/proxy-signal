@@ -89,7 +89,7 @@ def main():
         else:
             for name, success in results.items():
                 # Derived bearer tokens stay on ger1; the client never sees them.
-                url = PANEL_URL + group + "-" + name + "/external?success=" + (
+                url = PANEL_URL + group + "-" + name.replace("_", "-") + "/external?success=" + (
                     "true" if success else "false"
                 )
                 send(panel_token(token, group, name), url=url, timeout=3)
