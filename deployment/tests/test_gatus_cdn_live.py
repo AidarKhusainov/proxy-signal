@@ -217,6 +217,11 @@ endpoints:
                     Fixture.codes["xray"] = 503
                 wait_for(lambda: count("strict-xray") == 2, 20)
                 self.assertEqual(count("strict-subscriptions"), 1)
+            except Exception:
+                # The fixture has no secrets or production destinations.
+                subprocess.run(["docker", "logs", "--tail", "80", name],
+                               timeout=5, check=False)
+                raise
             finally:
                 subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, timeout=15, check=False)
@@ -224,6 +229,8 @@ endpoints:
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
                 server.shutdown()
                 https.shutdown()
+                server.server_close()
+                https.server_close()
                 thread.join(timeout=3)
                 ssl_thread.join(timeout=3)
 
