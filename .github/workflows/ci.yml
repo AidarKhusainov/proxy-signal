@@ -33,9 +33,9 @@ jobs:
       - run: cargo test --locked --all-targets
       - name: Offline external watchdog regression tests
         run: python3 -m unittest discover -s deployment/tests -p 'test_*.py' -v
-      - name: Isolated pinned-Gatus HTTP/DNS/TLS and incident regression
-        run: GATUS_LIVE_FIXTURES=1 python3 deployment/tests/test_gatus_cdn_live.py -v
-      - name: Isolated pinned-Gatus panel status and silence regression
+      - name: Isolated pinned-Gatus HTTP/DNS/TLS, incident and durable webhook regression
+        run: GATUS_LIVE_FIXTURES=1 python3 -m unittest discover -s deployment/tests -p 'test_gatus_*live.py' -v
+      - name: Isolated pinned-Gatus panel status and silence regression (#160)
         run: GATUS_LIVE_FIXTURES=1 python3 deployment/tests/test_panel_observer_live.py -v
       - name: Validate parallel Compose syntax
         run: |
@@ -46,6 +46,9 @@ jobs:
       - name: Validate localhost-only Gatus observer Compose
         run: |
           GATUS_IMAGE="ghcr.io/twin/gatus@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" docker compose -f deployment/gatus/compose.yaml config --quiet
+      - name: Validate opt-in pinned durable notifier Compose overlay
+        run: |
+          GATUS_IMAGE="ghcr.io/twin/gatus@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" GATUS_NOTIFIER_IMAGE="docker.io/library/python@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" GATUS_OBSERVER_ROLE="fin1" GATUS_ALERT_MODE="test" docker compose -f deployment/gatus/compose.yaml -f deployment/gatus/durable-compose.yaml config --quiet
       # Release/acceptance check only; avoid a Docker rebuild on every PR push.
       - name: Docker Compose and Xray smoke
         if: github.event_name == 'workflow_dispatch'

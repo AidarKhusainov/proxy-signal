@@ -1,0 +1,33 @@
+# Optional monitoring-only Russian Telegram relay; apply with -f compose.yaml -f durable-compose.yaml.
+# Never load this overlay until a reviewed immutable Python image and role are configured.
+services:
+  durable-down:
+    image: ${GATUS_NOTIFIER_IMAGE:?Use a reviewed immutable OCI @sha256 image}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.1
+    environment:
+      GATUS_OBSERVER_ROLE: ${GATUS_OBSERVER_ROLE:?Set ger1 or fin1}
+      GATUS_ALERT_MODE: ${GATUS_ALERT_MODE:?Explicit test or live alert mode}
+      GATUS_RECONCILE_ENABLED: ${GATUS_RECONCILE_ENABLED:-false}
+      PYTHONDONTWRITEBYTECODE: "1"
+    command: ["python3", "-u", "/app/durable-down.py"]
+    volumes:
+      - ./durable-down.py:/app/durable-down.py:ro
+      - ./private/alerts-data:/data
+      - ./private/telegram-token:/run/secrets/telegram-token:ro
+      - ./private/telegram-chat-id:/run/secrets/telegram-chat-id:ro
+      - ./private/webhook-key:/run/secrets/webhook-key:ro
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
