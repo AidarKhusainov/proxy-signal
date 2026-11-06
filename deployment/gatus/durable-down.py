@@ -249,7 +249,7 @@ def reconcile_results(db, role, statuses, now):
         current = db.execute("SELECT active FROM targets WHERE key=?", (key,)).fetchone()
         # Avoid reopening a delivered event while the Gatus alert is disarmed,
         # and avoid a high-frequency SQLite write on every 15s poll.
-        if current is not None and bool(current[0]) != (not success):
+        if current is not None and bool(current[0]) == (not success):
             continue
         if success:
             if current is None:  # Healthy on first sight never needs a row.
