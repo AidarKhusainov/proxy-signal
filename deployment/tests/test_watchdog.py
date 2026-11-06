@@ -52,6 +52,45 @@ class WatchdogStateTests(unittest.TestCase):
         self.assertFalse(watchdog.validate_state({"version": 2, "records": {}}, self.now))
 
 
+
+    def test_mandatory_coverage_is_independent_of_process_freshness(self):
+        state = self.healthy()
+        # Scheduler still reports a fresh legitimate network failure.
+        state["records"]["profile/happ/p06"]["last_status"] = "FAILED"
+        state["records"]["coverage/happ"] = {
+            "last_status": "OK", "last_code": "required_evidence_present",
+            "last_observed_at": self.now - 300,
+        }
+        self.assertTrue(watchdog.validate_state(state, self.now))
+        self.assertEqual(watchdog.required_coverage(state, self.now), "ok")
+        for status, code in (
+            ("FAILED", "required_evidence_missing"),
+            ("UNKNOWN", "source_failure_reported"),
+            ("UNSUPPORTED", "unsupported"),
+            ("OK", "observation_stale"),
+        ):
+            state["records"]["coverage/happ"].update(last_status=status, last_code=code)
+            self.assertEqual(watchdog.required_coverage(state, self.now), "fail")
+            self.assertTrue(watchdog.validate_state(state, self.now))
+        state["records"]["coverage/happ"].update(
+            last_status="OK", last_code="required_evidence_present",
+            last_observed_at=self.now - watchdog.MAX_AGE_SECONDS - 1,
+        )
+        self.assertEqual(watchdog.required_coverage(state, self.now), "fail")
+        del state["records"]["coverage/happ"]
+        self.assertEqual(watchdog.required_coverage(state, self.now), "fail")
+
+    @patch.object(watchdog.subprocess, "run")
+    @patch.object(watchdog.Path, "is_file", return_value=True)
+    def test_coverage_uses_only_allowlisted_ssh_commands(self, is_file, run):
+        for status in ("ok", "fail"):
+            watchdog.ssh_ping("ger1.example.org", 52222, "kuma-push",
+                              "/secure/key", "/secure/hosts", status)
+            self.assertEqual(run.call_args.args[0][-1], "heartbeat coverage=" + status)
+        with self.assertRaises(ValueError):
+            watchdog.ssh_ping("ger1.example.org", 52222, "kuma-push",
+                              "/secure/key", "/secure/hosts", "ok;touch /tmp/bad")
+
     @patch.object(watchdog.subprocess, "run")
     @patch.object(watchdog.Path, "is_file", return_value=True)
     def test_ssh_uses_pinned_host_key_and_no_remote_token(self, is_file, run):
