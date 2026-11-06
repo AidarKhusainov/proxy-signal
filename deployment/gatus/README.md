@@ -2,6 +2,70 @@
 
 **Status: PRODUCTION MIGRATION COMPLETED, 2026-11-03.** Both old Kuma containers and DOWN-only adapters were stopped and removed, with Docker volumes left intact. Gatus is actively monitoring on both nodes. No public ports were introduced; RemnaNode, Hostland ProxySignal and the original Remnawave monitoring were preserved.
 
+## Issue #161: reliable alerts and independent coverage (staged)
+
+**Not deployed from this branch.** The production Gatus instances currently use
+their built-in DOWN-only Telegram provider. The following is an opt-in
+monitoring-only migration; it does not change Panel, Xray, VPN or legacy checks.
+
+- ger1 gets `observer_proxysignal-required-coverage` independently of the
+  existing `observer_proxysignal-heartbeat`. When the checker is alive,
+  the Hostland watchdog may add `--send-coverage` after the receiver/config
+  upgrade. A fresh FAILED VPN observation does not mark the scheduler dead;
+  missing, stale, UNKNOWN, UNSUPPORTED or FAILED mandatory evidence is a
+  separate false coverage result. The old single-word `heartbeat` remains
+  backward-compatible.
+- A tiny optional `durable-compose.yaml` overlay runs one unprivileged
+  64 MiB / 0.1 CPU local notifier with **no published port**. Use a verified
+  immutable `GATUS_NOTIFIER_IMAGE` reference and an explicitly selected
+  `GATUS_OBSERVER_ROLE=ger1|fin1` and `GATUS_ALERT_MODE=live|test`.
+  Create `private/alerts-data` owner UID 65532 (0700) and a new random
+  32+ character root:65532 file-backed `private/webhook-key` (0440).
+  Existing bot token/chat files are read-only mounts.
+- Render with `--enable-alerts --durable-alerts`, keeping any existing
+  ger1 panel-monitor flags from #160 intact. Gatus's supported *custom*
+  provider posts only static endpoint keys and trigger/recovery events to
+  `http://durable-down:8080/event` with the protected key header.
+  Internally `send-on-resolved: true` rearms the notifier. Externally the
+  notifier sends **only confirmed DOWN** in Russian; recovered is silent.
+  The original ProxySignal independently retains Russian recovery notices.
+  No raw Gatus error, subscription URL or Telegram token enters the relay DB.
+- A triggered DOWN is inserted into durable SQLite before the Gatus webhook
+  succeeds. Duplicate/retried triggers, including after restart, are
+  suppressed until a confirmed RESOLVED event rearms the endpoint. The
+  pending outbox retries every 15 seconds until the Telegram Bot API returns
+  `ok:true`. A crash after Telegram ACK but before DB ACK can replay once;
+  at-least-once, not exactly-once. Delivered rows older than 30 days are
+  pruned while active incidents remain.
+- The existing ger1 restricted SSH receiver also gains an allowlisted
+  `status` command that exports only endpoint keys, result timestamps and
+  success booleans. fin1 requires a distinct restricted read-only
+  `gatus-status` SSH account/key on its **actual 53819 SSH port**. No
+  public listener, unrestricted shell, raw response or shared token.
+- The pinned Gatus heartbeat timer ticks at **10-minute intervals** for a
+  10-minute missed-update deadline. A stale signal can therefore be detected
+  at a later ticker tick (worst nominal phase approaches 20 minutes before
+  transport/notification delay). The exact runtime upper bound and
+  restart behavior require isolated fault-injection and live evidence;
+  `interval: 10m` is not a ten-minute alert guarantee.
+
+**Safe order:** inspect the actual current remote renderer and receiver,
+especially concurrent #160 changes; checkpoint original files and take
+consistent Gatus SQLite backups; stage the backward-compatible receiver and
+notifier overlay **without** changing Gatus alerts; prove TEST Telegram
+delivery, failed-send retry, forced-command rejection and data persistence;
+switch the Gatus *config only* to the custom provider and restart Gatus only;
+enable the coverage flag after two successful monitored records; verify
+normal actual alert recovery/dedup and the live pinned-SSH heartbeat. Roll
+back the notifier and renderer/config with Gatus-only restart if needed,
+keeping the original Telegram alert path and existing protected SQLite.
+Do not use production service failures as an alert fixture.
+
+See [#161 integration rollout](https://github.com/AidarKhusainov/remnawave-infra/pull/189)
+for read-only collectors, 04:27 UTC summary and independent Gatus-silence
+observation. Extended observation is a separate later stage after deployment
+and basic runtime acceptance.
+
 ## Independent public CDN canaries (#159)
 
 The existing **fin1** Gatus generator adds two independent HTTPS checks in the `observer` group. No additional container or public listener is needed.
