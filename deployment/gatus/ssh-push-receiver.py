@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -11,6 +12,7 @@ TOKEN_FILE = "/etc/proxysignal-gatus-push/token"
 PUSH_URL = "http://127.0.0.1:3002/api/v1/endpoints/observer_proxysignal-heartbeat/external?success=true"
 COVERAGE_OK_URL = "http://127.0.0.1:3002/api/v1/endpoints/observer_proxysignal-required-coverage/external?success=true"
 COVERAGE_FAIL_URL = "http://127.0.0.1:3002/api/v1/endpoints/observer_proxysignal-required-coverage/external?success=false"
+EXPORTER = "/usr/local/bin/proxysignal-gatus-status"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -36,8 +38,17 @@ def send(token, url=PUSH_URL):
 def main():
     try:
         command = os.environ.get("SSH_ORIGINAL_COMMAND")
-        if command not in ("heartbeat", "heartbeat coverage=ok", "heartbeat coverage=fail"):
+        if command not in ("heartbeat", "heartbeat coverage=ok", "heartbeat coverage=fail", "status"):
             raise ValueError("unexpected SSH command")
+        if command == "status":
+            response = subprocess.run(
+                ["/usr/bin/python3", EXPORTER, "--role", "ger1"],
+                capture_output=True, timeout=8, check=True,
+            )
+            if len(response.stdout) > 512 * 1024:
+                raise ValueError("oversized observer export")
+            sys.stdout.buffer.write(response.stdout)
+            return 0
         token = Path(TOKEN_FILE).read_text(encoding="ascii").strip()
         send(token)
         if command == "heartbeat coverage=ok":
@@ -45,7 +56,7 @@ def main():
         elif command == "heartbeat coverage=fail":
             send(token, COVERAGE_FAIL_URL)
         return 0
-    except (OSError, ValueError, urllib.error.URLError):
+    except (OSError, ValueError, urllib.error.URLError, subprocess.SubprocessError):
         print("Gatus Push receiver: heartbeat not delivered", file=sys.stderr)
         return 1
 
