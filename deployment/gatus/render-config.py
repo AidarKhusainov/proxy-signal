@@ -107,7 +107,7 @@ alerting:
         failure-threshold: 2
         success-threshold: 1
         send-on-resolved: false
-        description: {description}
+        description: {quote(description)}
 """
         return rendered
     raise ValueError("unsupported role")
