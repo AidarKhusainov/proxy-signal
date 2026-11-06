@@ -45,7 +45,8 @@ def read_secret(path, pattern):
     return value
 
 
-def render(role, telegram_token, chat_id, push_token=None, enable_alerts=False, panel_monitor=False):
+def render(role, telegram_token, chat_id, push_token=None,
+           enable_alerts=False, panel_monitor=False, panel_alerts=False):
     quote = json.dumps  # JSON quoted strings are valid YAML scalars.
     header = f"""storage:
   type: sqlite
@@ -101,7 +102,7 @@ alerting:
     heartbeat:
       interval: {interval}
 """
-                    if enable_alerts:
+                    if panel_alerts:
                         external += f"""    alerts:
       - type: telegram
         failure-threshold: {threshold}
@@ -165,6 +166,8 @@ def main():
     parser.add_argument("--private-dir", required=True, type=Path)
     parser.add_argument("--push-token-file", type=Path)
     parser.add_argument("--enable-alerts", action="store_true")
+    parser.add_argument("--panel-alerts", action="store_true",
+                        help="Arm new panel alerts after verified parallel acceptance")
     parser.add_argument("--panel-monitor", action="store_true",
                         help="Enable issue #160 external panel status endpoints on ger1")
     args = parser.parse_args()
@@ -179,8 +182,10 @@ def main():
     )
     if args.panel_monitor and args.role != "ger1":
         raise ValueError("panel monitoring receiver must be on ger1")
+    if args.panel_alerts and not args.panel_monitor:
+        raise ValueError("panel alerts require configured panel endpoints")
     content = render(args.role, telegram_token, chat_id, push_token,
-                     args.enable_alerts, args.panel_monitor)
+                     args.enable_alerts, args.panel_monitor, args.panel_alerts)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as stream:
         temporary = Path(stream.name)
         stream.write(content)
