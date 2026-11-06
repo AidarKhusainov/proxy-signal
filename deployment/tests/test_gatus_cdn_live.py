@@ -96,6 +96,62 @@ def endpoint(name, url, alert=False):
 
 @unittest.skipUnless(os.environ.get("GATUS_LIVE_FIXTURES") == "1", "Docker integration is opt-in")
 class GatusLiveFixtures(unittest.TestCase):
+    def test_production_renderer_parses_in_pinned_gatus(self):
+        """Parse the actual fin1 generated config, replacing every public target."""
+        import importlib.util
+        script = Path(__file__).resolve().parents[1] / "gatus" / "render-config.py"
+        spec = importlib.util.spec_from_file_location("gatus_renderer_fixture", script)
+        renderer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(renderer)
+        content = renderer.render(
+            "fin1", "123456:ABCDEFGHIJKLMNOPQRST", "-123", enable_alerts=True,
+        )
+        for original in (
+            "https://panel.censor-amoroso.com/",
+            "https://cdn-swe1.censor-amoroso.com/generate_204",
+            "https://sub.censor-amoroso.com/generate_204",
+        ):
+            self.assertIn(original, content)
+            content = content.replace(original, "http://127.0.0.1:1/generate_204")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.yaml"
+            config.write_text(content, encoding="utf-8")
+            config.chmod(0o644)  # Synthetic credentials only; no production secrets.
+            data = root / "data"
+            data.mkdir()
+            subprocess.run(["sudo", "chown", "65532:65532", str(data)], check=True)
+            name = "issue159-render-fixture-" + uuid.uuid4().hex[:8]
+            try:
+                subprocess.run([
+                    "docker", "run", "-d", "--rm", "--name", name,
+                    "--network=none", "--user=65532:65532", "--read-only",
+                    "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                    "--pids-limit=32", "--memory=64m", "--cpus=0.1",
+                    "-v", f"{config}:/config/config.yaml:ro",
+                    "-v", f"{data}:/data",
+                    "-e", "GATUS_CONFIG_PATH=/config/config.yaml", IMAGE,
+                ], check=True, stdout=subprocess.DEVNULL, timeout=20)
+                time.sleep(2)
+                state = subprocess.run(
+                    ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if state.returncode != 0 or state.stdout.strip() != "true":
+                    logs = subprocess.run(
+                        ["docker", "logs", name], capture_output=True,
+                        text=True, timeout=5,
+                    )
+                    self.fail("rendered Gatus config rejected: " +
+                              (logs.stdout + logs.stderr)[-1200:])
+            finally:
+                subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=10, check=False)
+                subprocess.run(["sudo", "chown", "-R",
+                                f"{os.getuid()}:{os.getgid()}", str(data)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=10, check=False)
+
     def test_strict_probes_independent_incidents_and_durable_restart(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
