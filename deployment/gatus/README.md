@@ -14,6 +14,8 @@ The collector, expected Remnawave node UUIDs, protected database query, Caddy/Au
 
 The old `panel-active-state.yml` schedule remains enabled through the coordinated #158 cutover. Deploy/rollback only through the scoped, source-SHA-reviewed production procedure in the infrastructure repository; retain its private original Gatus renderer/receiver/config backup. Never replace an operating monitoring configuration based solely on generated YAML or mock tests.
 
+**Issue #160 runtime acceptance:** [remnawave-infra Actions 42200197275](https://github.com/AidarKhusainov/remnawave-infra/actions/runs/42200197275) verified the existing ger1 Gatus with 21 external Panel/audit results, two real Hostland fast cycles and one audit, actual isolated Telegram TEST acknowledgement, persistence across a Gatus-only restart, and unchanged non-monitoring containers. Measured Gatus cgroup resource usage: 0.02% CPU, 8.348 MiB / 128 MiB RAM, six PID. The original Gatus renderer/receiver/config and Hostland rollout journal remain in protected local backup. No legacy scheduled checks were disabled.
+
 ## Independent public CDN canaries (#159)
 
 The existing **fin1** Gatus generator adds two independent HTTPS checks in the `observer` group. No additional container or public listener is needed.
