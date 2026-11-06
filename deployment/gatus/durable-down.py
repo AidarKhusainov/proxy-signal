@@ -104,6 +104,8 @@ def accept_event(db, role, event, now=None):
         elif state == "RESOLVED":
             db.execute("INSERT INTO targets(key, active) VALUES (?, 0) "
                        "ON CONFLICT(key) DO UPDATE SET active=0", (key,))
+        db.execute("DELETE FROM outbox WHERE delivered_at IS NOT NULL "
+                   "AND delivered_at < ?", (now - 30 * 86400,))
         db.commit()
     except Exception:
         db.rollback()
@@ -130,7 +132,11 @@ def send_telegram(role, key, created_at, active, opener=None):
     description = labels(role)[key]
     date = time.strftime("%d.%m.%Y %H:%M UTC", time.gmtime(created_at))
     suffix = "Сбой уже восстановлен." if not active else "Сбой подтверждён Gatus."
-    message = (f"Gatus · {role} · DOWN\nПроверка: {description}\n"
+    mode = os.environ.get("GATUS_ALERT_MODE", "test")
+    if mode not in ("test", "live"):
+        raise ValueError("invalid alert mode")
+    prefix = "[TEST Gatus]" if mode == "test" else "Gatus"
+    message = (f"{prefix} · {role} · DOWN\nПроверка: {description}\n"
                f"Причина: условия проверки не выполнены.\n"
                f"Обнаружено: {date}\n{suffix}")
     payload = json.dumps({
@@ -182,6 +188,7 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Avoid leaking headers, message bodies, tokens or Telegram URLs.
 
     def do_POST(self):
+        self.connection.settimeout(5)
         try:
             if self.path != "/event":
                 self.send_response(404)
@@ -233,6 +240,7 @@ def main():
     thread.start()
     try:
         server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
+        server.daemon_threads = True
         server.serve_forever()
     finally:
         stop.set()
