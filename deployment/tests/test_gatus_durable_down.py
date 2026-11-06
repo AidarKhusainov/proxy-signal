@@ -95,7 +95,7 @@ class DurableDownTests(unittest.TestCase):
             def open(self, req, timeout):
                 self.messages.append(json.loads(req.data))
                 self.assert_url = req.full_url
-                assert timeout == 12
+                assert timeout == 25
                 return Response()
         opener = Opener()
         with mock.patch.object(relay, "TOKEN_FILE", token_path), \
