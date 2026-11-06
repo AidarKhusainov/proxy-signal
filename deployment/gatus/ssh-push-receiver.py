@@ -40,7 +40,7 @@ def parse_report(command):
         raise ValueError("incomplete report")
     values = {}
     for entry in entries:
-        if not re.fullmatch(r"[a-z_]+=[01]", entry):
+        if not re.fullmatch(r"[a-z0-9_]+=[01]", entry):
             raise ValueError("invalid result")
         key, status = entry.split("=")
         if key not in expected or key in values:
