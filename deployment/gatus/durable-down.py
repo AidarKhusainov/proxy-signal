@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local-only Gatus incident relay: durable Russian DOWN, silent resolved, no public port."""
 import hmac
+from contextlib import closing
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -199,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             payload = json.loads(self.rfile.read(int(size)))
-            with connect(self.database) as db:
+            with closing(connect(self.database)) as db:
                 accept_event(db, self.role, payload)
             self.send_response(204)
             self.end_headers()
@@ -211,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
 def worker(role, stop, path=DB):
     while not stop.wait(RETRY_SECONDS):
         try:
-            with connect(path) as db:
+            with closing(connect(path)) as db:
                 send_one(db, role)
         except (sqlite3.Error, OSError, ValueError):
             print("Gatus relay: queue delivery unavailable", file=sys.stderr)
@@ -224,14 +225,15 @@ def main():
     if os.environ.get("GATUS_ALERT_MODE") not in ("live", "test"):
         raise ValueError("missing explicit alert mode")
     secret(WEBHOOK_FILE, r"[A-Za-z0-9_-]{32,128}")
-    with connect() as db:
+    with closing(connect()) as db:
         db.execute("SELECT 1")
     Handler.role = role
     stop = threading.Event()
     thread = threading.Thread(target=worker, args=(role, stop), daemon=True)
     thread.start()
     try:
-        ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+        server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
+        server.serve_forever()
     finally:
         stop.set()
         thread.join(timeout=3)
