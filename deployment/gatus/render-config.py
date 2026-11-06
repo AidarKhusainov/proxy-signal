@@ -83,7 +83,33 @@ alerting:
         send-on-resolved: false
         description: Hostland HTTPS недоступен (fin1)
 """
-        return header + ordinary + (ordinary_alert if enable_alerts else "")
+        rendered = header + ordinary + (ordinary_alert if enable_alerts else "")
+        for name, url, description in (
+            ("cdn-xray-public", "https://cdn-swe1.censor-amoroso.com/generate_204",
+             "CDN Xray: публичный HTTPS /generate_204 недоступен (fin1)"),
+            ("cdn-subscriptions-public", "https://sub.censor-amoroso.com/generate_204",
+             "CDN подписок: публичный HTTPS /generate_204 недоступен (fin1)"),
+        ):
+            rendered += f"""  - name: {name}
+    group: observer
+    url: {url}
+    method: GET
+    interval: 5m
+    client:
+      timeout: 10s
+      ignore-redirect: true
+    conditions:
+      - '[STATUS] == 204'
+"""
+            if enable_alerts:
+                rendered += f"""    alerts:
+      - type: telegram
+        failure-threshold: 2
+        success-threshold: 1
+        send-on-resolved: false
+        description: {quote(description)}
+"""
+        return rendered
     raise ValueError("unsupported role")
 
 
